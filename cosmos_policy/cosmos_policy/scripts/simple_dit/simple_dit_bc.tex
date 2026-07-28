@@ -1,0 +1,270 @@
+\documentclass[11pt]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath, amssymb}
+\usepackage{booktabs}
+\usepackage{hyperref}
+\usepackage{enumitem}
+
+\title{\texttt{simple\_dit\_bc}: A Minimal Flow-Matching DiT Policy for LIBERO}
+\author{}
+\date{}
+
+\begin{document}
+\maketitle
+
+\section{Overview}
+
+\texttt{simple\_dit\_bc} is a small, standalone behavior-cloning (BC) policy for the LIBERO
+benchmark. It is deliberately independent of the full Cosmos Policy stack (no VAE tokenizer, no
+text cross-attention, no FSDP/DCP checkpointing): it operates directly on raw RGB camera frames
+and is trained with a single-process training loop small enough to fit in $\sim$10--25M
+parameters. The model is trained with a rectified-flow / flow-matching objective over
+fixed-length action chunks, conditioned on two camera views, robot proprioception, and a
+pooled language-instruction embedding.
+
+\section{Data Preparation}
+
+\subsection{Raw data}
+
+Training data consists of LIBERO demonstration episodes stored as HDF5 files, one file per task,
+each containing multiple demos:
+\begin{center}
+\begin{tabular}{ll}
+\toprule
+Field & Description \\
+\midrule
+\texttt{obs/agentview\_rgb\_jpeg} & $(T,)$ object array of per-timestep JPEG bytes (third-person view) \\
+\texttt{obs/eye\_in\_hand\_rgb\_jpeg} & $(T,)$ object array of per-timestep JPEG bytes (wrist camera) \\
+\texttt{robot\_states} & $(T, 9)$ float64: gripper qpos (2) + eef pos (3) + eef quat (4) \\
+\texttt{actions} & $(T, 7)$ float64: end-effector delta pose (6) + gripper (1) \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+All \texttt{*.hdf5} files under a given data directory are discovered recursively. A task's
+natural-language instruction (e.g.\ ``pick up the alphabet soup and place it in the basket'') is
+derived directly from its filename, so it matches the keys of a precomputed T5 embedding table.
+
+\subsection{Language conditioning}
+
+Each instruction is mapped to a pooled embedding from a pickled table of T5 encodings,
+$\{\text{instruction} \rightarrow \mathbb{R}^{512 \times 1024}\}$ (512 padded token positions,
+1024-dim T5 hidden size). Since a typical instruction only occupies $\sim$10--15 real tokens, the
+zero-padded rows are masked out before pooling, and the pooled vector is the mean over only the
+non-padded rows:
+\begin{equation}
+    e_{\text{task}} = \frac{1}{|\mathcal{M}|} \sum_{i \in \mathcal{M}} T_i, \qquad
+    \mathcal{M} = \{ i : \|T_i\|_1 \neq 0 \},
+\end{equation}
+where $T \in \mathbb{R}^{512 \times 1024}$ is the raw padded T5 embedding for the instruction.
+Naively averaging over all 512 positions (including padding) dilutes the task-discriminative
+signal by up to $\sim$40$\times$ and was found to disproportionately hurt tasks whose target
+object needs language to disambiguate from visually similar distractors (e.g.\ ketchup vs.\ milk
+among other bottles).
+
+\subsection{Image and proprioception preprocessing}
+
+For every demo, both camera streams are JPEG-decoded and resized to a fixed square resolution
+(96\,px by default). Proprioception and actions are cast to \texttt{float32}, and dataset-wide
+per-dimension min/max statistics are computed \emph{fresh} over exactly the demos being trained
+on (not reused from any pre-existing cached statistics file, since those may cover a different
+task subset). Proprioception and actions are then min-max normalized to $[-1, 1]$:
+\begin{equation}
+    \tilde{x} = 2 \cdot \frac{x - x_{\min}}{x_{\max} - x_{\min}} - 1.
+\end{equation}
+Images are scaled from \texttt{uint8} to $[0, 1]$ but are otherwise not normalized (no
+mean/std standardization).
+
+\subsection{Action chunking}
+
+Rather than predicting a single next action, the model predicts a fixed-length chunk of $H = 16$
+future actions (\texttt{chunk\_size}) at every timestep, with padding by repeating the final
+action when a chunk would run past the end of an episode. Training examples are indexed
+per-timestep across the flattened concatenation of all demos, i.e.\ every $(t, \text{episode})$
+pair contributes one training sample of the form
+$(\text{agentview}_t, \text{wrist}_t, \text{proprio}_t, \text{actions}_{t:t+H}, e_{\text{task}})$.
+
+\subsection{Data augmentation}
+
+To reduce overfitting to exact pixel statistics given a small number of demonstrations per task
+($\sim$45), each camera image is augmented independently on every access:
+\begin{itemize}[nosep]
+    \item \textbf{Translation jitter}: the image is padded by 8\,px per side with edge-replication
+    and a random $H\times W$ crop is taken from the padded image, giving a small random shift.
+    \item \textbf{Brightness/contrast jitter}: independent multiplicative factors
+    $b, c \sim \mathcal{U}(0.8, 1.2)$ are applied as
+    $x' = \operatorname{clip}\big((x - \bar{x}) \cdot c + \bar{x}) \cdot b,\ 0,\ 1\big)$,
+    where $\bar{x}$ is the per-image mean pixel value.
+\end{itemize}
+This is applied only at training time; evaluation uses the raw resized frame.
+
+\section{Architecture}
+
+\texttt{SimpleDiTBC} is an AdaLN-Zero-conditioned Diffusion Transformer (DiT), following the
+original DiT recipe but with no cross-attention: all conditioning information (vision,
+proprioception, timestep, task) is fused into a single vector that modulates every transformer
+block via adaptive layer normalization.
+
+\subsection{Image encoder}
+
+A 4-layer strided convolutional stem (kernel 3, stride 2, padding 1, each followed by
+BatchNorm + ReLU) maps a $96 \times 96 \times 3$ image through channel widths
+$3 \to 32 \to 64 \to 128 \to 128$, yielding a $6 \times 6 \times 128$ feature map. The same
+encoder (shared weights) is applied to both the agentview and wrist camera frames.
+
+Rather than a global average pool, which discards all spatial localization information, the
+feature map is reduced with a \emph{spatial softmax}: for each of the $C = 128$ channels, a
+softmax over the $H\times W$ spatial positions is used as an attention weight to compute an
+expected $(x, y)$ coordinate,
+\begin{equation}
+    a_{c,i,j} = \frac{\exp(f_{c,i,j})}{\sum_{i',j'} \exp(f_{c,i',j'})}, \qquad
+    \bar{x}_c = \sum_{i,j} a_{c,i,j}\, x_{j}, \qquad
+    \bar{y}_c = \sum_{i,j} a_{c,i,j}\, y_{i},
+\end{equation}
+with $x_j, y_i \in [-1, 1]$ a fixed spatial grid. Concatenating $(\bar{x}_c, \bar{y}_c)$ over all
+channels gives a $2C = 256$-dim descriptor, which is linearly projected to the model width
+$d$ (\texttt{embed\_dim}). Unlike average pooling, this explicitly preserves \emph{where} each
+channel's activation is concentrated, which matters for a policy that must reach to and grasp a
+specific location.
+
+The agentview and wrist embeddings are combined by concatenation followed by a linear projection
+back to $d$, rather than summed, so the model can weight the two views independently instead of
+having one view's signal dilute or cancel the other's:
+\begin{equation}
+    v = W_{\text{vis}} \, [\, e_{\text{agent}} \,\Vert\, e_{\text{wrist}} \,] \in \mathbb{R}^d.
+\end{equation}
+
+\subsection{Other conditioning encoders}
+
+\begin{itemize}[nosep]
+    \item \textbf{Proprioception}: a 2-layer MLP (Linear--SiLU--Linear) maps the 9-dim
+    normalized proprioception vector to $\mathbb{R}^d$.
+    \item \textbf{Task embedding}: a 2-layer MLP (Linear--SiLU--Linear) projects the 1024-dim
+    pooled T5 instruction embedding $e_{\text{task}}$ to $\mathbb{R}^d$.
+    \item \textbf{Flow-matching timestep}: the scalar $t \in [0, 1]$ is mapped to a sinusoidal
+    embedding (frequencies scaled by 1000 to widen the otherwise narrow $[0,1]$ range) and passed
+    through a 2-layer MLP (Linear--SiLU--Linear) to $\mathbb{R}^d$.
+\end{itemize}
+
+All four signals are summed into a single conditioning vector:
+\begin{equation}
+    c = v + \text{MLP}_{\text{proprio}}(\text{proprio}) + \text{MLP}_{t}(t) +
+        \text{MLP}_{\text{task}}(e_{\text{task}}) \in \mathbb{R}^d.
+\end{equation}
+
+\subsection{Action tokens and DiT blocks}
+
+The noisy action chunk $x_t \in \mathbb{R}^{H \times 7}$ is linearly embedded per timestep to
+$\mathbb{R}^{H \times d}$ and a learned positional embedding is added, giving $H = 16$ action
+tokens. These tokens are refined by $N$ (\texttt{num\_blocks}) DiT blocks, each consisting of
+self-attention over the $H$ action tokens and an MLP, both modulated by the conditioning vector
+$c$ via AdaLN-Zero:
+\begin{align}
+    (\gamma_1, \beta_1, \alpha_1, \gamma_2, \beta_2, \alpha_2) &= \text{MLP}_{\text{ada}}(c) \\
+    x &\leftarrow x + \alpha_1 \odot \text{Attn}\big(\text{modulate}(\text{LN}(x), \gamma_1, \beta_1)\big) \\
+    x &\leftarrow x + \alpha_2 \odot \text{MLP}\big(\text{modulate}(\text{LN}(x), \gamma_2, \beta_2)\big),
+\end{align}
+where $\text{modulate}(x, \gamma, \beta) = x \cdot (1 + \gamma) + \beta$, $\text{LN}$ is
+LayerNorm without learned affine parameters, and the AdaLN projection's final linear layer is
+zero-initialized (standard AdaLN-Zero init, so each block starts as an identity map). A final
+AdaLN + linear layer (also zero-initialized) projects the $H$ tokens back to the 7-dim action
+space, producing the predicted velocity field.
+
+\subsection{Model sizes}
+
+\begin{center}
+\begin{tabular}{lrrrr}
+\toprule
+Config & \texttt{embed\_dim} & \texttt{num\_blocks} & \texttt{num\_heads} & Params \\
+\midrule
+Default & 256 & 6 & 8 & $\sim$8.1M \\
+Larger  & 384 & 8 & 8 & $\sim$23.2M \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\section{Training Objective}
+
+The model is trained with a rectified-flow / flow-matching objective, the same family used by
+the full Cosmos Policy loss. Let $x_1$ denote a ground-truth normalized action chunk and
+$x_0 \sim \mathcal{N}(0, I)$ Gaussian noise of the same shape. For $t \sim \mathcal{U}(0, 1)$
+sampled independently per training example, the noised sample and target velocity are
+\begin{equation}
+    x_t = (1 - t)\, x_0 + t\, x_1, \qquad v^{\star} = x_1 - x_0.
+\end{equation}
+The network $f_\theta$ predicts the velocity field conditioned on both camera views, proprio,
+task embedding, and $t$, and is trained to minimize the mean-squared error against the target
+velocity:
+\begin{equation}
+    \mathcal{L}(\theta) = \mathbb{E}_{x_1, x_0, t}
+    \Big[\, \big\| f_\theta(\text{agentview}, \text{wrist}, \text{proprio}, x_t, t, e_{\text{task}}) - v^{\star} \big\|_2^2 \,\Big].
+\end{equation}
+
+\subsection{Optimization}
+
+Parameters are optimized with AdamW at a peak learning rate of $10^{-4}$ (default), with a
+schedule consisting of linear warmup over \texttt{warmup\_iters} steps followed by cosine decay
+down to a floor of \texttt{min\_lr\_ratio} (default 0.05) $\times$ the peak learning rate by
+\texttt{max\_iter}:
+\begin{equation}
+    \eta(s) =
+    \begin{cases}
+        \eta_{\max} \cdot \dfrac{s+1}{s_{\text{warmup}}}, & s < s_{\text{warmup}} \\[1.2em]
+        \eta_{\max} \Big[ r_{\min} + (1 - r_{\min}) \cdot
+            \dfrac{1 + \cos\!\big(\pi \cdot \frac{s - s_{\text{warmup}}}{s_{\max} - s_{\text{warmup}}}\big)}{2} \Big],
+        & s \geq s_{\text{warmup}}.
+    \end{cases}
+\end{equation}
+Without the decay term, the learning rate would remain pinned at its peak for the entire
+post-warmup run, which in practice causes the loss to oscillate around a floor rather than
+continuing to settle.
+
+\section{Relationship to the Full Cosmos Policy Model}
+\label{sec:relationship}
+
+\texttt{simple\_dit\_bc} is in the same \emph{family} as the full Cosmos Policy model --- both are
+rectified-flow-trained Diffusion Transformers --- but it is not a scaled-down version of the same
+architecture solving the same problem, and the similarity should not be overstated.
+
+\begin{itemize}[nosep]
+    \item \textbf{Data prep.} The full pipeline's \texttt{LIBERODataset} reads the same underlying
+    HDF5 demos, but constructs a VAE-latent video sequence for the tokenizer/DiT (images tiled to
+    fill latent frames), injects a Monte Carlo discounted return-to-go as a conditioning token,
+    injects \emph{future} proprioception as a forecasting signal, and keeps the full 512-token T5
+    sequence for cross-attention. \texttt{simple\_dit\_bc} instead does single-step raw-pixel BC
+    with a single pooled task embedding and no return/future-proprio conditioning --- a
+    genuinely different (and simpler) learning problem, not a compressed version of the same one.
+    \item \textbf{Architecture.} The full model's DiT denoises \emph{VAE video latents}, with
+    actions entering only as AdaLN conditioning --- the inverse of \texttt{simple\_dit\_bc}, which
+    denoises actions conditioned on raw pixels. The full model's default block design also
+    includes real cross-attention over T5 tokens, RoPE-3D positional embeddings, and AdaLN-LoRA,
+    none of which are scaled-down variants present in \texttt{simple\_dit\_bc} --- they are simply
+    absent, since \texttt{simple\_dit\_bc} conditions everything through one fused vector instead.
+    \item \textbf{Loss.} Both use an MSE-on-velocity rectified-flow objective, but the full
+    pipeline's interpolation convention has $t=0$ at clean data and $t=1$ at noise (the reverse of
+    Section~4's convention), and samples $t$ from a logit-normal distribution passed through a
+    shifted ($\text{shift}=5$) Euler scheduler rather than $t \sim \mathcal{U}(0,1)$ --- the same
+    family of objective, not the same formula or noise schedule.
+\end{itemize}
+
+In short: \texttt{simple\_dit\_bc} borrows the rectified-flow/DiT \emph{idea} and a handful of
+data-loading utility functions from the full stack, but is an independently-scoped raw-pixel BC
+policy rather than a lightweight version of the full world-model-conditioned policy.
+
+\section{Inference}
+
+At rollout time, an action chunk is sampled by numerically integrating the learned velocity
+field with an explicit Euler scheme, starting from Gaussian noise at $t=0$ and integrating to
+$t=1$ over $K$ steps (\texttt{num\_denoising\_steps}):
+\begin{equation}
+    x_0 \sim \mathcal{N}(0, I), \qquad
+    x_{k+1} = x_k + f_\theta(\cdot, t_k, \cdot) \cdot \Delta t, \qquad
+    \Delta t = \tfrac{1}{K}, \quad t_k = k \Delta t.
+\end{equation}
+The resulting $x_K \in [-1,1]^{H \times 7}$ is unnormalized back to raw action space using the
+same per-dimension min/max statistics computed during data preparation. Of the $H$ actions in
+the resulting chunk, only the first \texttt{num\_open\_loop\_steps} are executed open-loop before
+the policy is re-queried with a fresh observation.
+
+\end{document}

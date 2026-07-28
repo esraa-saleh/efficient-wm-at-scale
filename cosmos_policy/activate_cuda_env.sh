@@ -3,17 +3,54 @@
 # cosmos_policy Python command:
 #   source "$(dirname "${BASH_SOURCE[0]}")/activate_cuda_env.sh"
 _cosmos_env_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Repin uv's own cache/home/python-install dirs to the same repo-local paths
+# setup_cosmos_policy_uv.sh installed everything into (it only exported these
+# for its own process, so a fresh shell - e.g. on a different compute node -
+# never saw them). Without this, `uv run`/`uv sync` fall back to uv's default
+# (non-repo-local) cache, find it empty, and try to re-resolve/download
+# packages - which hangs or fails on compute nodes with no internet access,
+# even though everything is already installed at these paths.
+export UV_HOME="$_cosmos_env_dir/.uv_home"
+export XDG_DATA_HOME="$UV_HOME/xdg_data"
+export XDG_CACHE_HOME="$UV_HOME/xdg_cache"
+export UV_PYTHON_INSTALL_DIR="$_cosmos_env_dir/.uv_python"
+export UV_CACHE_DIR="$_cosmos_env_dir/.uv_cache"
+export TMPDIR="$_cosmos_env_dir/.uv_tmp"
 # Pin HF_HOME to a fixed, repo-local cache dir (overriding any HF_HOME/module
 # default from the surrounding shell) so downloads always land where the
 # setup script's pre-fetch step put them - see setup_cosmos_policy_uv.sh.
 export HF_HOME="$_cosmos_env_dir/.hf_cache"
+# Everything this setup script pre-fetches (pretrained checkpoint, tokenizer,
+# base-model checkpoints eagerly resolved by cosmos_policy_experiment_configs.py
+# at import time, LIBERO simulator assets) is already cached under HF_HOME
+# above. Without HF_HUB_OFFLINE=1, huggingface_hub still attempts a live
+# network check before falling back to that cache - which hangs/fails outright
+# on compute nodes with no internet access (e.g. "Network is unreachable" from
+# get_checkpoint_by_hf), even though nothing actually needs downloading.
+export HF_HUB_OFFLINE=1
 _cosmos_site_packages="$(find "$_cosmos_env_dir/.venv/lib" -maxdepth 1 -type d -name 'python3.*' | head -n1)/site-packages"
 _cosmos_cuda_home="$(find "$_cosmos_site_packages/nvidia" -maxdepth 1 -type d -name 'cu[0-9]*' 2>/dev/null | head -n1)"
 if [[ -n "$_cosmos_cuda_home" ]]; then
   export CUDA_HOME="$_cosmos_cuda_home"
 fi
 _cosmos_ld_dirs="$(find "$_cosmos_site_packages/nvidia" -maxdepth 2 -type d -name lib 2>/dev/null | paste -sd: -)"
-if [[ -n "$_cosmos_ld_dirs" ]]; then
-  export LD_LIBRARY_PATH="$_cosmos_ld_dirs${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-fi
-unset _cosmos_env_dir _cosmos_site_packages _cosmos_cuda_home _cosmos_ld_dirs
+# Many pip-installed NVIDIA libraries (libcublas, libcudnn*, libnccl, libcufft,
+# etc.) ship only a versioned file (e.g. libcudart.so.13), not the unversioned
+# libcudart.so symlink a full CUDA toolkit install would provide. A raw
+# ctypes.CDLL("libcudart.so")/dlopen() call needs that exact filename to
+# exist somewhere in LD_LIBRARY_PATH - it does no soname-based version
+# resolution the way a compiled/linked binary's DT_NEEDED entry would. Create
+# those missing unversioned symlinks in their own dir and put it first on
+# LD_LIBRARY_PATH. Rebuilt (idempotently) every time this file is sourced, so
+# it self-heals if the venv's nvidia packages ever change.
+_cosmos_so_shim_dir="$_cosmos_env_dir/.cuda_so_shims"
+mkdir -p "$_cosmos_so_shim_dir"
+while IFS= read -r -d '' _cosmos_so; do
+  _cosmos_so_base="$(basename "$_cosmos_so")"
+  _cosmos_so_link="$_cosmos_so_shim_dir/${_cosmos_so_base%%.so.*}.so"
+  [[ -e "$_cosmos_so_link" ]] || ln -s "$_cosmos_so" "$_cosmos_so_link"
+done < <(find "$_cosmos_site_packages/nvidia" -iname "*.so.*" -print0 2>/dev/null)
+_cosmos_ld_dirs="$_cosmos_so_shim_dir:$_cosmos_ld_dirs"
+export LD_LIBRARY_PATH="$_cosmos_ld_dirs${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+unset _cosmos_env_dir _cosmos_site_packages _cosmos_cuda_home _cosmos_ld_dirs _cosmos_so_shim_dir _cosmos_so _cosmos_so_base _cosmos_so_link
+export BASE_DATASETS_DIR="/home/esraa1/projects/rrg-gberseth/esraa1/cosmos_policy_storage"

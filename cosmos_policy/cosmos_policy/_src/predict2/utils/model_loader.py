@@ -203,19 +203,23 @@ def load_model_state_dict_from_checkpoint(
     if s3_checkpoint_dir is not None:
         s3_checkpoint_dir = str(s3_checkpoint_dir)
     checkpoint_format = "pt" if s3_checkpoint_dir.endswith(".pt") else "dcp"
-    if s3_checkpoint_dir.startswith("s3:"):
-        if checkpoint_format == "pt":
-            cur_key_ckpt_full_path = s3_checkpoint_dir
-        elif s3_checkpoint_dir.rstrip("/").endswith("/model"):
-            cur_key_ckpt_full_path = s3_checkpoint_dir
-        else:
-            cur_key_ckpt_full_path = os.path.join(s3_checkpoint_dir, "model")
-    else:
+    # DistributedCheckpointer.save() (dcp.py) always writes each component ("model", "optim", ...) to its
+    # own subdirectory under iter_NNNNNNNNN/, regardless of local vs. S3 storage -- so a "dcp"-format
+    # checkpoint dir needs "/model" appended to reach the actual DCP shards/metadata, on both backends.
+    if checkpoint_format == "pt":
         cur_key_ckpt_full_path = s3_checkpoint_dir
+    elif s3_checkpoint_dir.rstrip("/").endswith("/model"):
+        cur_key_ckpt_full_path = s3_checkpoint_dir
+    else:
+        cur_key_ckpt_full_path = os.path.join(s3_checkpoint_dir, "model")
 
     from cosmos_policy._src.imaginaire.utils.checkpoint_db import get_checkpoint_path
 
-    load_from_local = True
+    # "pt" checkpoints are a single file easy_io.load() can read directly (below). "dcp" checkpoints
+    # (torch.distributed.checkpoint, written by DistributedCheckpointer.save() as a sharded directory,
+    # e.g. from cosmos_policy.scripts.train) have no file extension for easy_io to dispatch on and must
+    # go through the DCP-aware branch further below instead.
+    load_from_local = checkpoint_format == "pt"
     local_s3_ckpt_fp = get_checkpoint_path(cur_key_ckpt_full_path)
 
     if SMOKE:
