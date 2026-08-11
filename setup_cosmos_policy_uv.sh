@@ -132,10 +132,15 @@ export XDG_CACHE_HOME="$UV_HOME/xdg_cache"
 export UV_PYTHON_INSTALL_DIR="$_cosmos_env_dir/.uv_python"
 export UV_CACHE_DIR="$_cosmos_env_dir/.uv_cache"
 export TMPDIR="$_cosmos_env_dir/.uv_tmp"
-# Pin HF_HOME to a fixed, repo-local cache dir (overriding any HF_HOME/module
-# default from the surrounding shell) so downloads always land where the
-# setup script's pre-fetch step put them - see setup_cosmos_policy_uv.sh.
-export HF_HOME="$_cosmos_env_dir/.hf_cache"
+# Pin HF_HOME to a fixed cache dir (overriding any HF_HOME/module default
+# from the surrounding shell) so downloads always land where the setup
+# script's pre-fetch step put them - see setup_cosmos_policy_uv.sh. This
+# points at the project storage allocation, not a repo-local dir under
+# $HOME: checkpoints/tokenizers here run into the tens of GB, easily large
+# enough to blow a small $HOME quota on clusters (e.g. Compute Canada RRG
+# allocations) - same reasoning as DATASETS_DIR below. Override with
+# COSMOS_POLICY_HF_HOME if that path isn't right for you.
+export HF_HOME="${COSMOS_POLICY_HF_HOME:-/project/rrg-gberseth/esraa1/cosmos_policy_storage/hf_cache}"
 # Everything this setup script pre-fetches (pretrained checkpoint, tokenizer,
 # base-model checkpoints eagerly resolved by cosmos_policy_experiment_configs.py
 # at import time, LIBERO simulator assets) is already cached under HF_HOME
@@ -178,6 +183,11 @@ chmod +x "$ENV_FILE"
 # HF_HOME (see activate_cuda_env.sh) for the duration of this script.
 # shellcheck source=/dev/null
 source "$ENV_FILE"
+# ENV_FILE also sets HF_HUB_OFFLINE=1 (for later runtime use, once everything
+# is cached - see activate_cuda_env.sh). This setup script's whole point is to
+# populate that cache in the first place, so it needs live network access;
+# undo it for the remainder of this script only.
+unset HF_HUB_OFFLINE
 HF_HOME_DIR="$HF_HOME"
 mkdir -p "$HF_HOME_DIR"
 
@@ -291,14 +301,29 @@ print('Assets at:', download_assets_from_huggingface())
 # on clusters (e.g. Compute Canada RRG allocations), so it defaults to this
 # project's storage allocation. Override with COSMOS_POLICY_DATASETS_DIR if
 # that path isn't right for you.
-DATASETS_DIR="${COSMOS_POLICY_DATASETS_DIR:-/home/esraa1/projects/rrg-gberseth/esraa1/cosmos_policy_storage}"
+DATASETS_DIR="${COSMOS_POLICY_DATASETS_DIR:-/project/rrg-gberseth/esraa1/cosmos_policy_storage}"
 mkdir -p "$DATASETS_DIR"
 DATASET_REPO="nvidia/LIBERO-Cosmos-Policy"
 DATASET_DIR="$DATASETS_DIR/LIBERO-Cosmos-Policy"
 echo "Downloading LIBERO-Cosmos-Policy training dataset from Hugging Face ($DATASET_REPO)..."
 echo "  -> $DATASET_DIR"
 echo "If this repo is gated for your account, run '\"$VENV_DIR/bin/hf\" auth login' first and re-run this script."
-"$VENV_DIR/bin/hf" download "$DATASET_REPO" --repo-type dataset --local-dir "$DATASET_DIR"
+# This dataset's thousands of small files reliably trip HF's per-5-minute API
+# rate limit (one xet-read-token request per file) even at the default 8
+# workers, well before the transfer finishes. Retry with backoff - each
+# retry resumes rather than restarting, so this just rides out the 429s.
+for _cosmos_dl_attempt in 1 2 3 4 5; do
+  if "$VENV_DIR/bin/hf" download "$DATASET_REPO" --repo-type dataset --local-dir "$DATASET_DIR" --max-workers 4; then
+    break
+  fi
+  if [[ "$_cosmos_dl_attempt" -eq 5 ]]; then
+    echo "Error: dataset download kept hitting HF's rate limit after 5 attempts. Wait a few minutes and re-run this script (it resumes)." >&2
+    exit 1
+  fi
+  echo "Dataset download hit an error (likely HF rate limiting) - waiting 60s before retry $_cosmos_dl_attempt/5..."
+  sleep 60
+done
+unset _cosmos_dl_attempt
 
 # Points training scripts (cosmos_policy.scripts.train, train_from_scratch_bc_demo.py)
 # at the dataset just downloaded above (see LIBERO.md's BASE_DATASETS_DIR
