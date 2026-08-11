@@ -1,0 +1,40 @@
+# Actual values for TinyLiberoObjectSuiteParams (see ../params.py for the schema + why these get
+# applied as a plain dict overlay onto the training LazyDict in ../experiment.py, rather than
+# composed in via a Hydra `defaults` entry -- job 18781181).
+
+# Hydra *experiment* name (the recipe) this registers -- not the Slurm *job* name. train.sbatch
+# overrides job.name=cosmos_distill_experiments on top of this, which is what the checkpoint dir
+# and auto-resume (checkpoints/latest_checkpoint.txt) actually key off of. This exact string is a
+# real cross-folder dependency: ../../cosmos_dit_wm/submit_sweep.py launches a separate run
+# (job_name=cosmos_dit_wm_tiny_libero_object_suite_v2) against this same experiment name, so it
+# must not change even though this folder itself was renamed from
+# cosmos_dit_wm_tiny_libero_object_suite.
+experiment_name: cosmos_dit_wm_tiny_libero_from_scratch
+
+# Real production LIBERO recipe (config/experiment/cosmos_policy_experiment_configs.py) this
+# inherits from before the tiny/single-GPU overrides below.
+base_experiment: cosmos_predict2_2b_480p_libero
+
+# fsdp_shard_size=8 (inherited from base_experiment) assumes 8 GPUs; 1 degenerates FSDP to no
+# sharding, which is what a single-GPU job needs.
+fsdp_shard_size: 1
+
+# "Tiny" MiniTrainDIT trunk size -- same as every other stage in the roadmap (see
+# ../../cosmos_dit_wm/cosmos_dit_frame_replace_stages.tex). Partial override on top of the
+# inherited net config -- crossattn width, patch_spatial, in/out_channels, use_adaln_lora, etc. all
+# stay inherited from the real 2B net, untouched.
+model_channels: 128
+num_blocks: 4
+num_heads: 4
+
+# Empty (falsy) load_path skips loading the released 2B checkpoint -- see `if self.load_path:` in
+# _src/imaginaire/checkpointer/ddp.py -- so the tiny net trains from scratch instead of
+# fine-tuning pretrained weights.
+checkpoint_load_path: ""
+
+# Inference-only variant: narrows the SDE's sigma range for inference-time sampling (vs. the wider
+# range used for training), same as the released checkpoint's inference config. Partial override --
+# p_mean, p_std, hybrid_sigma_distribution, uniform_lower/upper all stay inherited.
+inference_sigma_max: 80.0
+inference_sigma_min: 4.0
+inference_job_group: cosmos_v2_inference

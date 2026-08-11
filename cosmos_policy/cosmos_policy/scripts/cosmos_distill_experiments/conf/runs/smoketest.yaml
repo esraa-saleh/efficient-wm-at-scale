@@ -1,0 +1,21 @@
+# Sanity check that this pipeline (config registered via the config/experiment/ shim, run_train.py
+# launching, checkpoint/loss-csv writing) actually works end-to-end before trusting train.yaml's
+# real 30000-iter/12h run. Deliberately a DIFFERENT job_name -- distinct checkpoint dir and loss
+# CSV, never touches train's existing checkpoints or resumes from them (checkpoint.load_path="" is
+# inherited from the tiny experiment, so this always starts at iteration 0).
+#
+# max_iter=1: trainer.py always force-saves a checkpoint once the training loop exits, even when
+# iteration % save_iter != 0 (see the unconditional self.checkpointer.save(...) right after the
+# loop in trainer.py / _src/imaginaire/trainer.py) -- so 1 iteration is enough to exercise the
+# checkpoint-write path without waiting on save_iter to land exactly on a multiple.
+job_name: cosmos_distill_experiments_smoketest
+experiment: cosmos_dit_wm_tiny_libero_from_scratch
+data_dir: libero_object_regen
+max_iter: 1
+batch_size: 8
+checkpoint_save_iter: 5
+time_limit: "00:10:00"
+mem: "40G"
+cpus: 8
+account: rrg-gberseth
+filename: smoketest.sbatch

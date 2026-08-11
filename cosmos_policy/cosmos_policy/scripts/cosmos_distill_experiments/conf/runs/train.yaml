@@ -1,0 +1,15 @@
+# The real job: resumes from the existing checkpoint (same job_name -> same job.path_local ->
+# checkpoints/latest_checkpoint.txt) instead of retraining from scratch. Composed into
+# SweepConfig.runs.train by ../config.yaml's `runs@runs.train: train` defaults entry -- see
+# ../../sweep.py for the RunConfig schema these fields are validated against.
+job_name: cosmos_distill_experiments
+experiment: cosmos_dit_wm_tiny_libero_from_scratch
+data_dir: libero_object_regen
+max_iter: 30000
+batch_size: 8
+checkpoint_save_iter: 200
+time_limit: "12:00:00"
+mem: "40G"
+cpus: 8
+account: rrg-gberseth
+filename: train.sbatch

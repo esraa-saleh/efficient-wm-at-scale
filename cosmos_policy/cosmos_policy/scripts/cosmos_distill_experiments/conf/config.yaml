@@ -1,0 +1,25 @@
+# Composes sweep.py's ConfigStore-registered SweepConfig (name="sweep_config") as this script's
+# primary config, and tells Hydra's own bookkeeping to stay out of the way: no timestamped
+# outputs/<date>/<time>/ directory, no .hydra/config.yaml dump, no chdir into a run dir. This
+# script writes its own files (train.sbatch, smoketest.sbatch) at known, explicit paths -- Hydra's
+# usual per-run output directory has no use here.
+#
+# `paths` composes paths.yaml (cluster-storage paths) into SweepConfig.paths -- its own
+# `# @package paths` header is what places it there instead of at the config root.
+#
+# The `runs@runs.<name>: <name>` entries compose runs/<name>.yaml (validated against sweep.py's
+# RunConfig schema) into SweepConfig.runs[<name>] -- add a new launchable run by adding a new
+# runs/<name>.yaml file here plus one more such line, no Python edit needed.
+defaults:
+  - sweep_config
+  - paths
+  - runs@runs.train: train
+  - runs@runs.smoketest: smoketest
+  - _self_
+
+hydra:
+  run:
+    dir: .
+  output_subdir: null
+  job:
+    chdir: false

@@ -1,0 +1,15 @@
+# @package paths
+#
+# Cluster-storage paths submit_sweep.py needs to generate train.sbatch/smoketest.sbatch --
+# specific to this account's storage allocation, so they live here rather than as literals in
+# submit_sweep.py. (repo_root is NOT here: it's derived from this file's own location in
+# submit_sweep.py instead, since it's a structural fact -- "wherever this repo was cloned" -- not a
+# per-account config value, and deriving it avoids a second source of truth that could drift.)
+
+# Base dir RunConfig.data_dir is resolved against, unless data_dir already starts with "/".
+data_root: /project/rrg-gberseth/esraa1/cosmos_policy_storage/LIBERO-Cosmos-Policy/success_only
+
+# Checkpoints/loss-CSVs/wandb-offline-runs/DeviceMonitor all land under here (see
+# IMAGINAIRE_OUTPUT_ROOT in the generated sbatch scripts, and experiment.py's _OUTPUT_ROOT, which
+# reads that same env var at training time).
+output_root: /project/rrg-gberseth/esraa1/cosmos_policy_storage/cosmos_dit_wm_output
