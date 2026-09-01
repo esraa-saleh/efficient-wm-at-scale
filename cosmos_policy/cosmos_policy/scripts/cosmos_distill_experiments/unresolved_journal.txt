@@ -1,0 +1,50 @@
+Unresolved journal -- cosmos_distill_experiments (KD static distillation sweep)
+
+Companion to experiment_journal.txt: that file is the full chronological narrative (what was done,
+when, why); this one is a running list of OPEN items only -- real findings/questions surfaced along
+the way that were flagged but not yet investigated further or acted on. Each entry here also exists
+in experiment_journal.txt with full context/investigation detail; this file exists so open items
+don't have to be re-found by re-reading the entire narrative log. Move an entry to a "Resolved"
+section (or delete it) once it's actually investigated/fixed, noting the resolution and which
+experiment_journal.txt entry documents it.
+
+============================================================
+OPEN
+============================================================
+
+--- 2026-09-01: success_only demo filtering may be the wrong data source for value/future-state
+loss terms, per the Cosmos Policy paper's own stated recipe ---
+
+What: regenerate_libero_dataset.py (vendored, unmodified upstream Cosmos Policy code -- see
+experiment_journal.txt's 2026-09-01 entry for the provenance check) filters out every
+unsuccessfully-replayed demonstration, unconditionally, producing the
+LIBERO-Cosmos-Policy/success_only/<suite>_regen datasets. Every dataset this KD sweep is built
+from (kd_distill_dataset_std_0_05, kd_teacher_native_distill_dataset,
+kd_synthetic_distill_dataset_std_0_05, and the merged _pa dataset) traces back to this
+success_only source, with no carve-out anywhere in the pipeline.
+
+Why it's a problem: the actual Cosmos Policy paper (arxiv.org/abs/2601.16163, Section 5.1) says
+"we filter unsuccessful demonstrations for policy training but use the full unfiltered set for
+world model and value function training" -- i.e. the paper's own recipe calls for TWO different
+data sources depending on which loss term is being trained, and this repo's pipeline only ever
+produces (and uses) one of them.
+
+Who's affected: any of the 6 sweep variants with a value and/or future-state objective --
+syn_tn/syn_tn_pa (action+value+future) and av_syn_tn/av_syn_tn_pa (action+value) -- per the
+paper's recipe, these should arguably be training their value/future-state heads against the FULL
+unfiltered demo set, not success_only. action_syn_tn/action_syn_tn_pa (action-only) are NOT
+affected, since they have no value/future-state term to mis-source.
+
+Status: flagged, not investigated. Unknown whether this was a deliberate simplification when the
+KD pipeline was originally built (e.g. for infra simplicity, or because the effect was judged
+negligible) or an unnoticed gap. No unfiltered dataset variant currently exists anywhere in
+/project storage to compare against.
+
+Next step to actually resolve this: regenerate an unfiltered version of at least one suite (rerun
+regenerate_libero_dataset.py without its success-filter, or with it disabled via a small code
+change -- it currently has no flag to skip filtering, would need one added), rebuild
+kd_distill_dataset_std_0_05-equivalent shards against it, and compare value/future-state loss (or
+downstream success rate) against the existing success_only-trained checkpoints for one of the
+affected variants. Given the sweep's existing 3.3% success-rate ceiling (see
+experiment_journal.txt), this is a plausible thing to investigate if that ceiling remains
+unexplained by other causes.
