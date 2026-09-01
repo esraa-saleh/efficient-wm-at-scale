@@ -1,0 +1,44 @@
+# Same-size (~500M), non-KD baseline: trains cosmos_kd_student_500m_libero (registered in
+# ../../kd/net_experiments.py) with the ORIGINAL Cosmos Policy training objective instead of KD,
+# from the exact same teacher-derived initialization the 6 kd_static_500m_* variants use --
+# isolates KD-vs-non-KD loss at FIXED size, the size-matched pairing baseline_1b_train couldn't
+# provide (there is no kd_static_1b_* run, so baseline_1b_train vs. the 6 KD variants confounds
+# size with loss-type -- see experiment_journal.txt's 2026-08-25 entry asking this question).
+# Companion to kd_static_1b_std_0_05_syn_tn.yaml, which does the reverse isolation (KD at 1B size).
+# Needs zero new launch code: goes through the existing torchrun/Trainer path unmodified, exactly
+# like baseline_1b_train.yaml.
+#
+# checkpoint.load_path below is a DCP directory (NOT kd_static_500m_*.yaml's own student_init_path,
+# which is the flat kd_inits/student_init_500m.pt kd_static loads directly via its own code) --
+# same DCP-vs-flat requirement baseline_1b_train hit (DistributedCheckpointer.
+# keys_to_resume_during_load(), dcp.py:493, excludes any ".pt"-suffixed load_path). Generated via
+# init_student_from_teacher.py --student_size 500m --dcp_out kd_inits/student_init_500m_dcp (job
+# 19635212) -- deliberately did NOT touch the existing kd_inits/student_init_500m.pt (still in use
+# by the 3 already-launched kd_static_500m_std_0_05*/std_0_10* runs); the --out flat file this
+# generation also had to produce went to a distinctly-named throwaway path instead. See
+# experiment_journal.txt's 2026-08-25 entry for the smoketest that verified this DCP dir actually
+# loads (not silently trains from scratch) before the real run below was trusted to use it.
+job_name: cosmos_kd_baseline_500m_train
+
+# Same account storage as baseline_1b_train.yaml -- each run's yaml is the one file that fully
+# determines it, so this is copied rather than shared via a conf/paths.yaml side file.
+data_root: /project/rrg-gberseth/esraa1/cosmos_policy_storage/LIBERO-Cosmos-Policy/success_only
+output_root: /project/rrg-gberseth/esraa1/cosmos_policy_storage/cosmos_dit_wm_output
+
+experiment: cosmos_kd_student_500m_libero
+suites: [libero_object_regen]
+max_iter: 30000
+batch_size: 8
+checkpoint_save_iter: 200
+extra_overrides:
+  checkpoint.load_path: /project/rrg-gberseth/esraa1/cosmos_policy_storage/kd_inits/student_init_500m_dcp
+# Distinct from baseline_1b_train's/baseline_1b_train_scratch's default 12341 -- Slurm can pack
+# multiple 1-GPU torchrun jobs from the same user onto one physical multi-GPU node, and two
+# torchrun runs on the SAME node with the SAME --master_port collide with EADDRINUSE (hit this for
+# real: job 19636971, killed in 6s). See sweep.py's RunConfig.master_port docstring.
+master_port: 12343
+time_limit: "12:00:00"
+mem: "40G"
+cpus: 8
+account: rrg-gberseth
+filename: baseline_500m_train.sbatch

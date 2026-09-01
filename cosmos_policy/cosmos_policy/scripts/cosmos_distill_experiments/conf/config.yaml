@@ -4,17 +4,72 @@
 # script writes its own files (train.sbatch, smoketest.sbatch) at known, explicit paths -- Hydra's
 # usual per-run output directory has no use here.
 #
-# `paths` composes paths.yaml (cluster-storage paths) into SweepConfig.paths -- its own
-# `# @package paths` header is what places it there instead of at the config root.
-#
 # The `runs@runs.<name>: <name>` entries compose runs/<name>.yaml (validated against sweep.py's
 # RunConfig schema) into SweepConfig.runs[<name>] -- add a new launchable run by adding a new
-# runs/<name>.yaml file here plus one more such line, no Python edit needed.
+# runs/<name>.yaml file here plus one more such line, no Python edit needed. Cluster-storage paths
+# (data_root/output_root) are plain RunConfig fields now, set directly in each runs/<name>.yaml --
+# no separate paths.yaml/`paths` group composed in here anymore.
+#
+# `run_type: build_distill_dataset` runs (one-shot dataset builds, not training runs) live under
+# runs/datasets/ instead of directly under runs/ -- same RunConfig schema, same `runs@runs.<name>`
+# composition mechanism (just a `runs/datasets` group instead of `runs`), kept in their own
+# subfolder purely so the folder listing separates "things that train" from "things that build
+# data" at a glance.
+#
+# NOTE: the package half (`runs.build_distill_dataset_std_0_05`) uses underscores, not the literal
+# "0.05" the filename has -- Hydra's `group@package: name` syntax parses dots in the *package* half
+# as attribute-path separators (so a literal "0.05" there would resolve to
+# runs.build_distill_dataset_std_0 -> "05", not one key). The `name` half (after the colon) is just
+# a filename lookup, so it keeps the file's real "0.05"/"0.1" spelling.
 defaults:
   - sweep_config
-  - paths
   - runs@runs.train: train
   - runs@runs.smoketest: smoketest
+  - runs@runs.kd_train: kd_train
+  - runs@runs.kd_train_av: kd_train_av
+  - runs@runs.kd_train_action: kd_train_action
+  - runs@runs.baseline_1b_train: baseline_1b_train
+  - runs@runs.baseline_1b_train_eval: baseline_1b_train_eval
+  - runs@runs.baseline_1b_train_scratch: baseline_1b_train_scratch
+  - runs@runs.baseline_1b_train_scratch_eval: baseline_1b_train_scratch_eval
+  - runs@runs.baseline_500m_train: baseline_500m_train
+  - runs@runs.baseline_500m_train_eval: baseline_500m_train_eval
+  - runs@runs.kd_static_1b_std_0_05_syn_tn: kd_static_1b_std_0_05_syn_tn
+  - runs@runs.kd_static_1b_std_0_05_syn_tn_eval: kd_static_1b_std_0_05_syn_tn_eval
+  - runs@runs.kd_static_1b_scratch_std_0_05_syn_tn: kd_static_1b_scratch_std_0_05_syn_tn
+  - runs@runs.kd_static_1b_scratch_std_0_05_syn_tn_eval: kd_static_1b_scratch_std_0_05_syn_tn_eval
+  - runs@runs.kd_static_500m_std_0_05: kd_static_500m_std_0_05
+  - runs@runs.kd_static_500m_std_0_10: kd_static_500m_std_0_10
+  - runs@runs.kd_static_500m_std_0_05_eval: kd_static_500m_std_0_05_eval
+  - runs@runs.kd_static_500m_std_0_10_eval: kd_static_500m_std_0_10_eval
+  - runs@runs.kd_static_500m_std_0_05_av: kd_static_500m_std_0_05_av
+  - runs@runs.kd_static_500m_std_0_10_av: kd_static_500m_std_0_10_av
+  - runs@runs.kd_static_500m_std_0_05_av_eval: kd_static_500m_std_0_05_av_eval
+  - runs@runs.kd_static_500m_std_0_10_av_eval: kd_static_500m_std_0_10_av_eval
+  - runs@runs.kd_static_500m_std_0_05_action: kd_static_500m_std_0_05_action
+  - runs@runs.kd_static_500m_std_0_10_action: kd_static_500m_std_0_10_action
+  - runs@runs.kd_static_500m_std_0_05_action_eval: kd_static_500m_std_0_05_action_eval
+  - runs@runs.kd_static_500m_std_0_10_action_eval: kd_static_500m_std_0_10_action_eval
+  - runs@runs.kd_static_synthetic_smoketest: kd_static_synthetic_smoketest
+  - runs@runs.kd_static_500m_std_0_05_syn_tn: kd_static_500m_std_0_05_syn_tn
+  - runs@runs.kd_static_500m_std_0_05_syn_tn_pa: kd_static_500m_std_0_05_syn_tn_pa
+  - runs@runs.kd_static_500m_std_0_05_syn_tn_eval: kd_static_500m_std_0_05_syn_tn_eval
+  - runs@runs.kd_static_500m_std_0_05_syn_tn_pa_eval: kd_static_500m_std_0_05_syn_tn_pa_eval
+  - runs@runs.kd_static_500m_std_0_05_av_syn_tn: kd_static_500m_std_0_05_av_syn_tn
+  - runs@runs.kd_static_500m_std_0_05_av_syn_tn_pa: kd_static_500m_std_0_05_av_syn_tn_pa
+  - runs@runs.kd_static_500m_std_0_05_av_syn_tn_eval: kd_static_500m_std_0_05_av_syn_tn_eval
+  - runs@runs.kd_static_500m_std_0_05_av_syn_tn_pa_eval: kd_static_500m_std_0_05_av_syn_tn_pa_eval
+  - runs@runs.kd_static_500m_std_0_05_action_syn_tn: kd_static_500m_std_0_05_action_syn_tn
+  - runs@runs.kd_static_500m_std_0_05_action_syn_tn_pa: kd_static_500m_std_0_05_action_syn_tn_pa
+  - runs@runs.kd_static_500m_std_0_05_action_syn_tn_eval: kd_static_500m_std_0_05_action_syn_tn_eval
+  - runs@runs.kd_static_500m_std_0_05_action_syn_tn_pa_eval: kd_static_500m_std_0_05_action_syn_tn_pa_eval
+  - runs/datasets@runs.build_distill_dataset_std_0_05: build_distill_dataset_std_0.05
+  - runs/datasets@runs.build_distill_dataset_std_0_10: build_distill_dataset_std_0.1
+  - runs/datasets@runs.build_distill_dataset_std_0_05_smoketest: build_distill_dataset_std_0.05_smoketest
+  - runs/datasets@runs.build_synthetic_distill_dataset: build_synthetic_distill_dataset
+  - runs/datasets@runs.build_synthetic_distill_dataset_smoketest: build_synthetic_distill_dataset_smoketest
+  - runs/datasets@runs.build_teacher_native_distill_dataset: build_teacher_native_distill_dataset
+  - runs/datasets@runs.build_teacher_native_distill_dataset_smoketest: build_teacher_native_distill_dataset_smoketest
   - _self_
 
 hydra:

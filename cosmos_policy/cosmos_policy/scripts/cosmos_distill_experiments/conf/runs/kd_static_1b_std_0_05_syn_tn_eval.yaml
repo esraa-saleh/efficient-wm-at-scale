@@ -1,0 +1,32 @@
+# Continuous full-suite eval companion to kd_static_1b_std_0_05_syn_tn -- otherwise identical to
+# kd_static_500m_std_0_05_syn_tn_eval.yaml (see its comments); only job_name/monitored_job_name/
+# eval_inference_experiment (1b size)/filename differ. No eval_checkpoint_format override needed --
+# kd_static writes flat iter_NNNNNNNNN/model.pt regardless of student size, so the "kd_static"
+# default (periodic_libero_eval_static.py) applies unchanged.
+job_name: cosmos_distill_experiments_kd_static_1b_std_0_05_syn_tn_eval
+run_type: kd_static_eval
+gpus: 1
+
+# Same account storage as train.yaml -- each run's yaml is the one file that fully determines it,
+# so this is copied rather than shared via a conf/paths.yaml side file.
+data_root: /project/rrg-gberseth/esraa1/cosmos_policy_storage/LIBERO-Cosmos-Policy/success_only
+output_root: /project/rrg-gberseth/esraa1/cosmos_policy_storage/cosmos_dit_wm_output
+
+# Must exactly match kd_static_1b_std_0_05_syn_tn.yaml's own job_name -- that's how
+# submit_sweep.py resolves which run's checkpoints/ to watch.
+monitored_job_name: cosmos_distill_experiments_kd_static_1b_std_0_05_syn_tn
+
+# Same coverage as every other eval config in this folder (10 tasks x 3 trials = 30 episodes per
+# checkpoint), for a genuinely apples-to-apples success-rate comparison.
+eval_task_suite_name: libero_object
+eval_num_trials_per_task: 3
+
+eval_inference_experiment: cosmos_kd_student_1b_libero__inference_only
+eval_dataset_stats_path: /project/rrg-gberseth/esraa1/cosmos_policy_storage/LIBERO-Cosmos-Policy/success_only/libero_object_regen/dataset_statistics.json
+eval_t5_text_embeddings_path: /project/rrg-gberseth/esraa1/cosmos_policy_storage/LIBERO-Cosmos-Policy/success_only/t5_embeddings.pkl
+
+time_limit: "23:59:00"
+mem: "40G"
+cpus: 8
+account: rrg-gberseth
+filename: kd_static_1b_std_0_05_syn_tn_eval.sbatch

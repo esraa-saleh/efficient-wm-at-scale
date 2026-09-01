@@ -1,0 +1,36 @@
+# Continuous full-suite eval companion to kd_static_500m_std_0_10_av -- otherwise identical to the
+# sibling kd_static_500m_std_0_05_av_eval.yaml (see its comments and
+# kd/periodic_libero_eval_static.py's module docstring); only job_name/monitored_job_name/filename
+# differ.
+job_name: cosmos_distill_experiments_kd_static_500m_std_0_10_av_eval
+run_type: kd_static_eval
+gpus: 1
+
+# Same account storage as train.yaml -- each run's yaml is the one file that fully determines it,
+# so this is copied rather than shared via a conf/paths.yaml side file.
+data_root: /project/rrg-gberseth/esraa1/cosmos_policy_storage/LIBERO-Cosmos-Policy/success_only
+output_root: /project/rrg-gberseth/esraa1/cosmos_policy_storage/cosmos_dit_wm_output
+
+# Must exactly match kd_static_500m_std_0_10_av.yaml's own job_name -- that's how submit_sweep.py
+# resolves which run's checkpoints/ to watch.
+monitored_job_name: cosmos_distill_experiments_kd_static_500m_std_0_10_av
+
+# Full suite (every task in libero_object), 3 trials/task = 30 episodes per checkpoint evaluated --
+# real coverage, not a narrow subset. Every checkpoint under checkpoints/ gets exactly this, at
+# whatever cadence the training run's own checkpoint_every produces them (300 checkpoints over a
+# 30000-iteration run at checkpoint_every=100) -- this job's own restart-safety is what makes that
+# tractable across more than one Slurm allocation if needed, not a single long-enough time_limit.
+eval_task_suite_name: libero_object
+eval_num_trials_per_task: 3
+
+# Inference-mode registration of the same student size this is monitoring (net_experiments.py) --
+# narrows the SDE sigma range for sampling, same as every other eval config in this folder.
+eval_inference_experiment: cosmos_kd_student_500m_libero__inference_only
+eval_dataset_stats_path: /project/rrg-gberseth/esraa1/cosmos_policy_storage/LIBERO-Cosmos-Policy/success_only/libero_object_regen/dataset_statistics.json
+eval_t5_text_embeddings_path: /project/rrg-gberseth/esraa1/cosmos_policy_storage/LIBERO-Cosmos-Policy/success_only/t5_embeddings.pkl
+
+time_limit: "23:59:00"
+mem: "40G"
+cpus: 8
+account: rrg-gberseth
+filename: kd_static_500m_std_0_10_av_eval.sbatch

@@ -1,0 +1,42 @@
+# Same-size (~1B), non-KD baseline: trains cosmos_kd_student_1b_libero (registered in
+# ../../kd/net_experiments.py) with the ORIGINAL Cosmos Policy training objective instead of KD,
+# from the exact same teacher-derived initialization the KD run uses -- the required comparison per
+# the KD plan (same architecture, same init, same data, same update count; only the loss differs).
+# Needs zero new launch code: this goes through the existing torchrun/Trainer path unmodified,
+# exactly like train.yaml/smoketest.yaml already do.
+#
+# checkpoint.load_path below is the DCP-directory sibling of kd_train.yaml's student_init_path (kd
+# loads the flat .pt directly via its own code; this run needs the DCP dir instead -- see the
+# extra_overrides comment below for why). Kept as a literal here (not derived) since RunConfig has
+# no shared field for it across torchrun vs. kd_live run_types.
+#
+# Verified (not just assumed) to actually load rather than silently training from scratch -- see
+# experiment_journal.txt's 2026-08-25 entry for the max_iter=1 smoketest that confirmed the
+# "Resuming ckpt ..." log line, not "Training from scratch.". See also baseline_1b_train_scratch.
+# yaml, the deliberate from-scratch (no load_path) counterpart to this run, for isolating whether
+# the shared init matters at all vs. standard training converging similarly regardless.
+job_name: cosmos_kd_baseline_1b_train
+
+# Same account storage as train.yaml -- each run's yaml is the one file that fully determines it,
+# so this is copied rather than shared via a conf/paths.yaml side file.
+data_root: /project/rrg-gberseth/esraa1/cosmos_policy_storage/LIBERO-Cosmos-Policy/success_only
+output_root: /project/rrg-gberseth/esraa1/cosmos_policy_storage/cosmos_dit_wm_output
+
+experiment: cosmos_kd_student_1b_libero
+suites: [libero_object_regen]
+max_iter: 30000
+batch_size: 8
+checkpoint_save_iter: 200
+extra_overrides:
+  # A DCP directory, NOT the flat student_init_1b.pt -- DistributedCheckpointer.
+  # keys_to_resume_during_load() (checkpointer/dcp.py:493) excludes any load_path ending in ".pt"
+  # from being treated as an init to load, so the flat file alone would silently train from scratch.
+  # Generated via init_student_from_teacher.py --student_size 1b --dcp_out <this dir> (see
+  # experiment_journal.txt, 2026-08-25 entry, for why/how); verified to actually load, not just
+  # exist, via a max_iter=1 smoketest before this file was pointed at it for the real run.
+  checkpoint.load_path: /project/rrg-gberseth/esraa1/cosmos_policy_storage/kd_inits/student_init_1b_dcp
+time_limit: "12:00:00"
+mem: "40G"
+cpus: 8
+account: rrg-gberseth
+filename: baseline_1b_train.sbatch

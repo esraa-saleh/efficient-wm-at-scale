@@ -1,0 +1,30 @@
+# Continuous full-suite eval companion to baseline_500m_train -- otherwise identical to
+# baseline_1b_train_eval.yaml (see its comments); eval_checkpoint_format=dcp for the same reason
+# (baseline_500m_train goes through the standard torchrun/DistributedCheckpointer path, not
+# kd_static's flat iter_NNNNNNNNN/model.pt).
+job_name: cosmos_distill_experiments_baseline_500m_train_eval
+run_type: kd_static_eval
+gpus: 1
+
+data_root: /project/rrg-gberseth/esraa1/cosmos_policy_storage/LIBERO-Cosmos-Policy/success_only
+output_root: /project/rrg-gberseth/esraa1/cosmos_policy_storage/cosmos_dit_wm_output
+
+# Must exactly match baseline_500m_train.yaml's own job_name -- that's how submit_sweep.py resolves
+# which run's checkpoints/ to watch.
+monitored_job_name: cosmos_kd_baseline_500m_train
+
+# Same coverage as the 6 KD variants' + baseline_1b_train's own eval (10 tasks x 3 trials = 30
+# episodes per checkpoint), for a genuinely apples-to-apples success-rate comparison.
+eval_task_suite_name: libero_object
+eval_num_trials_per_task: 3
+eval_checkpoint_format: dcp
+
+eval_inference_experiment: cosmos_kd_student_500m_libero__inference_only
+eval_dataset_stats_path: /project/rrg-gberseth/esraa1/cosmos_policy_storage/LIBERO-Cosmos-Policy/success_only/libero_object_regen/dataset_statistics.json
+eval_t5_text_embeddings_path: /project/rrg-gberseth/esraa1/cosmos_policy_storage/LIBERO-Cosmos-Policy/success_only/t5_embeddings.pkl
+
+time_limit: "23:59:00"
+mem: "40G"
+cpus: 8
+account: rrg-gberseth
+filename: baseline_500m_train_eval.sbatch

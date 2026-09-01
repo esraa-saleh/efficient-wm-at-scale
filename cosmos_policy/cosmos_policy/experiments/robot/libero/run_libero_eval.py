@@ -106,9 +106,11 @@ Usage examples:
 
 """
 
+import csv
 import json
 import logging
 import os
+import pathlib
 import time
 import traceback
 from collections import deque
@@ -241,6 +243,7 @@ class PolicyEvalConfig:
     # LIBERO environment-specific parameters
     #################################################################################################################
     task_suite_name: str = TaskSuite.LIBERO_SPATIAL                      # Task suite (must be one of: LIBERO_SPATIAL, LIBERO_OBJECT, LIBERO_GOAL, LIBERO_10, LIBERO_90)
+    task_ids: str = ""                                                   # Comma-separated task indices to evaluate (e.g. "0" or "0,3,5"); empty = every task in the suite
     num_trials_per_task: int = 50                                        # Number of rollouts per task
     initial_states_path: str = "DEFAULT"                                 # "DEFAULT", or path to initial states JSON file
     env_img_res: int = 256                                               # Resolution for rendering environment images (not policy input resolution)
@@ -250,6 +253,10 @@ class PolicyEvalConfig:
     #################################################################################################################
     local_log_dir: str = "./experiments/logs"                            # Local directory for eval logs
     run_id_note: Optional[str] = None                                    # Extra note to add to end of run ID for logging
+    summary_csv: Optional[str] = None                                    # Path to write per-task success-rate CSV (task_id, task_description, num_trials, num_successes, success_rate). Defaults to '<local_log_dir>/<run_id>_results.csv'
+    # If set, persist per-episode results so an outer wrapper can relaunch after a MuJoCo SIGABRT
+    # mid-episode and skip already-finished episodes (see kd/eval_sim_crash_resume.py).
+    eval_progress_path: Optional[str] = None
 
     use_wandb: bool = False                                              # Whether to also log results in Weights & Biases
     wandb_entity: str = "YOUR_ENTITY"                                    # Name of WandB entity
@@ -265,6 +272,76 @@ class PolicyEvalConfig:
     jpeg_compress: bool = True                                           # If True, apply JPEG compression to images before saving
 
     # fmt: on
+
+
+def _empty_eval_progress() -> dict:
+    return {"completed": [], "in_progress": None}
+
+
+def load_eval_progress(path: Optional[str]) -> dict:
+    """Load episode progress JSON, or an empty structure if unset / missing."""
+    if not path:
+        return _empty_eval_progress()
+    progress_path = pathlib.Path(path)
+    if not progress_path.is_file():
+        return _empty_eval_progress()
+    with open(progress_path) as f:
+        data = json.load(f)
+    data.setdefault("completed", [])
+    data.setdefault("in_progress", None)
+    return data
+
+
+def save_eval_progress(path: Optional[str], data: dict) -> None:
+    """Atomically write episode progress JSON (no-op if path is unset)."""
+    if not path:
+        return
+    progress_path = pathlib.Path(path)
+    progress_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = progress_path.with_suffix(progress_path.suffix + ".tmp")
+    with open(tmp_path, "w") as f:
+        json.dump(data, f, indent=2)
+        f.flush()
+        os.fsync(f.fileno())
+    tmp_path.replace(progress_path)
+
+
+def clear_eval_progress(path: Optional[str]) -> None:
+    if not path:
+        return
+    progress_path = pathlib.Path(path)
+    if progress_path.is_file():
+        progress_path.unlink()
+
+
+def eval_progress_completed_lookup(progress: dict) -> dict[tuple[int, int], dict]:
+    return {(int(c["task_id"]), int(c["episode_idx"])): c for c in progress.get("completed", [])}
+
+
+def mark_eval_episode_in_progress(path: Optional[str], task_id: int, episode_idx: int, progress: dict) -> None:
+    progress["in_progress"] = {"task_id": int(task_id), "episode_idx": int(episode_idx)}
+    save_eval_progress(path, progress)
+
+
+def mark_eval_episode_completed(
+    path: Optional[str],
+    task_id: int,
+    episode_idx: int,
+    success: bool,
+    progress: dict,
+    reason: Optional[str] = None,
+) -> None:
+    progress["completed"] = [
+        c
+        for c in progress.get("completed", [])
+        if not (int(c["task_id"]) == int(task_id) and int(c["episode_idx"]) == int(episode_idx))
+    ]
+    entry = {"task_id": int(task_id), "episode_idx": int(episode_idx), "success": bool(success)}
+    if reason:
+        entry["reason"] = reason
+    progress["completed"].append(entry)
+    progress["in_progress"] = None
+    save_eval_progress(path, progress)
 
 
 # Set up logging
@@ -691,7 +768,32 @@ def run_task(
             # Get initial state
             initial_state = np.array(all_initial_states[initial_states_task_key][episode_key]["initial_state"])
 
+        # Resume support: if an outer wrapper relaunched after a MuJoCo SIGABRT, skip episodes
+        # already recorded in eval_progress_path (including ones marked failed due to sim_crash).
+        progress = load_eval_progress(cfg.eval_progress_path)
+        prior = eval_progress_completed_lookup(progress).get((int(task_id), int(episode_idx)))
+        if prior is not None:
+            success = bool(prior["success"])
+            reason = prior.get("reason", "resume")
+            log_message(
+                f"Skipping task {task_id} episode {episode_idx} "
+                f"(already recorded: success={success} / {reason})",
+                log_file,
+            )
+            task_episodes += 1
+            total_episodes += 1
+            if success:
+                task_successes += 1
+                total_successes += 1
+            log_message(f"Success: {success}", log_file)
+            log_message(f"# episodes completed so far: {total_episodes}", log_file)
+            log_message(f"# successes: {total_successes} ({total_successes / total_episodes * 100:.1f}%)", log_file)
+            continue
+
         log_message(f"Starting episode {task_episodes + 1}...", log_file)
+
+        # Mark in_progress before the sim step loop so a SIGABRT leaves a recoverable breadcrumb.
+        mark_eval_episode_in_progress(cfg.eval_progress_path, task_id, episode_idx, progress)
 
         # Run episode
         success, replay_images, replay_wrist_images, future_image_predictions_list, collected_data = run_episode(
@@ -721,6 +823,7 @@ def run_task(
             success=success,
             task_description=task_description,
             log_file=log_file,
+            rollout_dir=cfg.local_log_dir,
         )
 
         # Save replay video with future image predictions included
@@ -742,6 +845,7 @@ def run_task(
             future_wrist_image_predictions=future_wrist_image_predictions,
             log_file=log_file,
             show_diff=False,
+            rollout_dir=cfg.local_log_dir,
         )
 
         # Save episodic data (in data collection mode)
@@ -769,6 +873,8 @@ def run_task(
 
             _save_episode_data()
 
+        mark_eval_episode_completed(cfg.eval_progress_path, task_id, episode_idx, success, progress)
+
         # Log results
         log_message(f"Success: {success}", log_file)
         log_message(f"# episodes completed so far: {total_episodes}", log_file)
@@ -793,6 +899,10 @@ def run_task(
     return (
         total_episodes,
         total_successes,
+        task_id,
+        task_description,
+        task_episodes,
+        task_successes,
     )
 
 
@@ -896,12 +1006,22 @@ def eval_libero(cfg: PolicyEvalConfig) -> float:
     log_message(f"Task suite: {cfg.task_suite_name}", log_file)
     log_message(f"Number of tasks: {num_tasks}", log_file)
 
+    task_ids_to_eval = (
+        [int(t.strip()) for t in cfg.task_ids.split(",")] if cfg.task_ids else list(range(num_tasks))
+    )
+    log_message(f"Evaluating task_id(s): {task_ids_to_eval}", log_file)
+
     # Start evaluation
     total_episodes, total_successes = 0, 0
-    for task_id in tqdm.tqdm(range(num_tasks)):
+    results = []
+    for task_id in tqdm.tqdm(task_ids_to_eval):
         (
             total_episodes,
             total_successes,
+            result_task_id,
+            result_task_description,
+            task_episodes,
+            task_successes,
         ) = run_task(
             cfg,
             task_suite,
@@ -915,6 +1035,15 @@ def eval_libero(cfg: PolicyEvalConfig) -> float:
             total_successes,
             log_file,
         )
+        results.append(
+            {
+                "task_id": result_task_id,
+                "task_description": result_task_description,
+                "num_trials": task_episodes,
+                "num_successes": task_successes,
+                "success_rate": float(task_successes) / float(task_episodes) if task_episodes > 0 else 0,
+            }
+        )
 
     # Calculate final success rate
     final_success_rate = float(total_successes) / float(total_episodes) if total_episodes > 0 else 0
@@ -924,6 +1053,22 @@ def eval_libero(cfg: PolicyEvalConfig) -> float:
     log_message(f"Total episodes: {total_episodes}", log_file)
     log_message(f"Total successes: {total_successes}", log_file)
     log_message(f"Overall success rate: {final_success_rate:.4f} ({final_success_rate * 100:.1f}%)", log_file)
+
+    # Write per-task results CSV in the same format as eval_mpc_joint.py / eval_mpc.py
+    summary_csv_path = (
+        pathlib.Path(cfg.summary_csv)
+        if cfg.summary_csv
+        else pathlib.Path(cfg.local_log_dir) / f"{run_id}_results.csv"
+    )
+    summary_csv_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(summary_csv_path, "w", newline="") as f:
+        writer = csv.DictWriter(
+            f, fieldnames=["task_id", "task_description", "num_trials", "num_successes", "success_rate"]
+        )
+        writer.writeheader()
+        writer.writerows(results)
+    log_message(f"Wrote per-task results to {summary_csv_path}", log_file)
+
     # Log to wandb if enabled
     if cfg.use_wandb:
         wandb.log(
@@ -943,6 +1088,9 @@ def eval_libero(cfg: PolicyEvalConfig) -> float:
             error_msg = f"Error shutting down worker pool: {e}"
             traceback_str = traceback.format_exc()
             log_message(f"{error_msg}\nFull traceback:\n{traceback_str}", log_file)
+
+    # Full suite finished cleanly -- drop resume breadcrumbs so a later eval starts fresh.
+    clear_eval_progress(cfg.eval_progress_path)
 
     # Close log file
     if log_file:

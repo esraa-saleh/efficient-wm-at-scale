@@ -1,0 +1,41 @@
+# Builds a standalone synthetic KD dataset -- see kd/build_synthetic_distill_dataset.py's and
+# kd/synthetic_generation.py's own module docstrings for what this actually does (perturb each
+# selected example's action, query the teacher for the resulting future state/value via real
+# multi-step sampling with that action held fixed as conditioning) and why it's a SEPARATE pipeline
+# from build_distill_dataset_std_0.05.yaml/build_distill_dataset_std_0.1.yaml, not a mode of either.
+# Not a training run: no checkpoint, no resume -- see submit_sweep.py's dedicated
+# build_synthetic_distill_dataset handling.
+job_name: cosmos_distill_experiments_build_synthetic_distill_dataset
+run_type: build_synthetic_distill_dataset
+gpus: 1
+
+# Same account storage as train.yaml -- each run's yaml is the one file that fully determines it,
+# so this is copied rather than shared via a conf/paths.yaml side file.
+data_root: /project/rrg-gberseth/esraa1/cosmos_policy_storage/LIBERO-Cosmos-Policy/success_only
+output_root: /project/rrg-gberseth/esraa1/cosmos_policy_storage/cosmos_dit_wm_output
+
+# All 4 suites + real rollout data -- both demo and rollout are valid source pools to synthesize
+# off of (LIBERODataset already draws from both every batch; see build_synthetic_distill_dataset.py's
+# own module docstring).
+suites: [libero_object_regen, libero_goal_regen, libero_spatial_regen, libero_10_regen]
+rollout_data_dir: /project/rrg-gberseth/esraa1/cosmos_policy_storage/LIBERO-Cosmos-Policy/all_episodes
+
+# 2000 raw batches x batch_size 8 = 16,000 synthetic examples -- roughly the same scale as the real
+# static KD dataset (build_distill_dataset_std_0.05.yaml's own 16,000), but each one costs a real
+# multi-step generate_samples_from_batch call (not build_distill_dataset.py's cheap single
+# denoise() call), so this build takes meaningfully longer per example -- start smaller and grow
+# once real timing from the smoketest is known, if this turns out too slow at full scope.
+num_batches: 2000
+batch_size: 8
+examples_per_shard: 500
+
+action_perturbation_std: 0.05
+num_denoising_steps: 1  # matches real eval's own defaults -- see synthetic_generation.py's docstring
+
+synthetic_dataset_dir: /project/rrg-gberseth/esraa1/cosmos_policy_storage/kd_synthetic_distill_dataset_std_0_05
+
+time_limit: "11:59:00"
+mem: "80G"
+cpus: 8
+account: rrg-gberseth
+filename: build_synthetic_distill_dataset.sbatch

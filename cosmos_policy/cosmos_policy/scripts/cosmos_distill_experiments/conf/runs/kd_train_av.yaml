@@ -1,0 +1,45 @@
+# Same run as kd_train.yaml -- identical hyperparameters, identical data -- except run_type:
+# kd_live_av routes build_sbatch_script() to train_kd_av.py instead of train_kd.py, which drops
+# future-state prediction from the loss: only the action-chunk and value slots of the shared video
+# latent are supervised (see train_kd_av.py's own module docstring). Same job_name every time ->
+# auto-resumes from train_state.pt instead of retraining from scratch, matching kd_train.yaml's own
+# convention. Composed into SweepConfig.runs.kd_train_av by ../config.yaml's
+# `runs@runs.kd_train_av: kd_train_av` defaults entry.
+job_name: cosmos_distill_experiments_kd_train_av
+run_type: kd_live_av
+gpus: 2
+
+# Same account storage as train.yaml -- each run's yaml is the one file that fully determines it,
+# so this is copied rather than shared via a conf/paths.yaml side file.
+data_root: /project/rrg-gberseth/esraa1/cosmos_policy_storage/LIBERO-Cosmos-Policy/success_only
+output_root: /project/rrg-gberseth/esraa1/cosmos_policy_storage/cosmos_dit_wm_output
+
+# All 4 suites + real rollout data, matching kd_train.yaml's own value exactly -- same training
+# distribution, only the loss's action/value-only scope differs.
+suites: [libero_object_regen, libero_goal_regen, libero_spatial_regen, libero_10_regen]
+rollout_data_dir: /project/rrg-gberseth/esraa1/cosmos_policy_storage/LIBERO-Cosmos-Policy/all_episodes
+
+max_iter: 30000
+batch_size: 8
+log_every: 10
+checkpoint_every: 200
+lr: 1.0e-4
+
+student_net_experiment_name: cosmos_kd_student_1b_libero
+# Output of: python -m cosmos_policy.scripts.cosmos_distill_experiments.kd.init_student_from_teacher
+#   --student_size 1b --out <this path>
+# Must exist before this run launches -- see README.md's "Launch (KD)" section. Same init
+# kd_train.yaml uses -- only the loss's action/value-only scope differs between the two.
+student_init_path: /project/rrg-gberseth/esraa1/cosmos_policy_storage/kd_inits/student_init_1b.pt
+
+
+# See batch_prep.py's combined_kd_loss_action_value_only: the student's action/value loss is a
+# blend of the teacher's own prediction (pure distillation) and the real ground truth, weighted
+# evenly -- matches kd_train.yaml's own value.
+ground_truth_loss_weight: 0.5
+
+time_limit: "24:00:00"
+mem: "80G"
+cpus: 8
+account: rrg-gberseth
+filename: kd_train_av.sbatch

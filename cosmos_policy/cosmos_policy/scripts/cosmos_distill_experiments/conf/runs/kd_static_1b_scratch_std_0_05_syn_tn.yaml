@@ -1,0 +1,51 @@
+# Fourth leg of the 1B comparison, alongside baseline_1b_train.yaml (non-KD, teacher-derived init),
+# baseline_1b_train_scratch.yaml (non-KD, random init), and kd_static_1b_std_0_05_syn_tn.yaml (KD,
+# teacher-derived init): this one is the SAME architecture/data/update-count/loss as
+# kd_static_1b_std_0_05_syn_tn.yaml but with student_init_path omitted entirely, so it falls back to
+# RunConfig's own default ("") -- exactly how baseline_1b_train_scratch.yaml gets its random init on
+# the non-KD side (see that file's own docstring). Verified via code inspection (not just precedent):
+# kd_static's student loading goes through the SAME load_policy_model(checkpoint=params.
+# student_init_path) as every other path in this codebase -- an empty/falsy checkpoint there resolves
+# s3_checkpoint_dir=None, which falls back to cosmos_kd_student_1b_libero's own registered
+# checkpoint.load_path="" default (net_experiments.py), i.e. a genuine random init, not an implicit
+# reuse of any other checkpoint.
+#
+# Completes the 2x2 (KD vs. non-KD) x (teacher-derived vs. random init) design. Motivation: KD
+# already fails at both 500M (all 6 variants) and 1B (kd_static_1b_std_0_05_syn_tn, flatlined at
+# ~0% through iter 28,100+ despite near-zero training loss) with teacher-derived init -- this run
+# asks whether that failure is intrinsic to the KD loss itself, or whether the teacher-derived init
+# is specifically interacting badly with it (e.g. some kind of stuck local optimum). No DCP-init
+# prerequisite needed, same reasoning as baseline_1b_train_scratch.yaml's own docstring.
+job_name: cosmos_distill_experiments_kd_static_1b_scratch_std_0_05_syn_tn
+run_type: kd_static
+gpus: 1
+
+data_root: /project/rrg-gberseth/esraa1/cosmos_policy_storage/LIBERO-Cosmos-Policy/success_only
+output_root: /project/rrg-gberseth/esraa1/cosmos_policy_storage/cosmos_dit_wm_output
+
+student_device: cuda:0
+
+# Matches kd_static_1b_std_0_05_syn_tn.yaml's own values for a like-for-like comparison -- only
+# student_init_path (omitted here -> random init) differs between this file and that one.
+max_iter: 60000
+batch_size: 8
+log_every: 10
+checkpoint_every: 100
+lr: 1.0e-4
+
+student_net_experiment_name: cosmos_kd_student_1b_libero
+# student_init_path deliberately OMITTED -- falls back to RunConfig's own default (""), which
+# load_policy_model treats as "no checkpoint override," which in turn falls back to
+# cosmos_kd_student_1b_libero's own registered checkpoint.load_path="" -- a genuine random init.
+
+ground_truth_loss_weight: 0.5
+
+distill_dataset_dir: /project/rrg-gberseth/esraa1/cosmos_policy_storage/kd_distill_dataset_std_0_05
+synthetic_dataset_dir: /project/rrg-gberseth/esraa1/cosmos_policy_storage/kd_teacher_native_distill_dataset
+
+seed: 0
+time_limit: "12:00:00"
+mem: "150G"
+cpus: 8
+account: rrg-gberseth
+filename: kd_static_1b_scratch_std_0_05_syn_tn.sbatch

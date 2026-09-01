@@ -9,8 +9,16 @@
 # loop in trainer.py / _src/imaginaire/trainer.py) -- so 1 iteration is enough to exercise the
 # checkpoint-write path without waiting on save_iter to land exactly on a multiple.
 job_name: cosmos_distill_experiments_smoketest
+
+# Same account storage as train.yaml -- each run's yaml is the one file that fully determines it,
+# so this is copied rather than shared via a conf/paths.yaml side file.
+data_root: /project/rrg-gberseth/esraa1/cosmos_policy_storage/LIBERO-Cosmos-Policy/success_only
+output_root: /project/rrg-gberseth/esraa1/cosmos_policy_storage/cosmos_dit_wm_output
+
+# References train.yaml's already-registered experiment by name -- doesn't define its own
+# architecture (base_experiment/model_channels/etc.), unlike train.yaml.
 experiment: cosmos_dit_wm_tiny_libero_from_scratch
-data_dir: libero_object_regen
+suites: [libero_object_regen]
 max_iter: 1
 batch_size: 8
 checkpoint_save_iter: 5

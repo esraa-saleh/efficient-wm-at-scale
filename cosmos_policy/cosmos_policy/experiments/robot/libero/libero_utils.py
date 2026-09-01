@@ -58,9 +58,9 @@ def get_libero_wrist_image(obs, flip_images: bool = False):
     return img
 
 
-def save_rollout_video(rollout_images, idx, success, task_description, log_file=None):
+def save_rollout_video(rollout_images, idx, success, task_description, log_file=None, rollout_dir=None):
     """Saves an MP4 replay of an episode."""
-    rollout_dir = f"./rollouts/{DATE}"
+    rollout_dir = f"{rollout_dir}/rollouts/{DATE}" if rollout_dir is not None else f"./rollouts/{DATE}"
     os.makedirs(rollout_dir, exist_ok=True)
     processed_task_description = task_description.lower().replace(" ", "_").replace("\n", "_").replace(".", "_")[:40]
     mp4_path = f"{rollout_dir}/{DATE_TIME}--episode={idx}--success={success}--task={processed_task_description}.mp4"
@@ -86,9 +86,10 @@ def save_rollout_video_with_future_image_predictions(
     future_wrist_image_predictions=None,
     show_diff=False,
     log_file=None,
+    rollout_dir=None,
 ):
     """Saves an MP4 replay of an episode with future image predictions shown on the right."""
-    rollout_dir = f"./rollouts/{DATE}"
+    rollout_dir = f"{rollout_dir}/rollouts/{DATE}" if rollout_dir is not None else f"./rollouts/{DATE}"
     os.makedirs(rollout_dir, exist_ok=True)
     processed_task_description = task_description.lower().replace(" ", "_").replace("\n", "_").replace(".", "_")[:35]
     mp4_path = f"{rollout_dir}/{DATE_TIME}--with_future_img--episode={idx}--success={success}--task={processed_task_description}.mp4"

@@ -1,0 +1,50 @@
+# Static-KD run: trains the 500m student against the precomputed distillation dataset
+# (kd/build_distill_dataset.py's output, action_perturbation_std=0.1 variant) instead of querying
+# the teacher live -- see README.md's "Static KD" section. Otherwise identical to the sibling
+# kd_static_500m_std_0_05.yaml -- only distill_dataset_dir/job_name/filename differ -- so the two
+# runs are a clean comparison of perturbation magnitude's effect on the same student size/recipe.
+job_name: cosmos_distill_experiments_kd_static_500m_std_0_10
+run_type: kd_static
+gpus: 1
+
+# Same account storage as train.yaml -- each run's yaml is the one file that fully determines it,
+# so this is copied rather than shared via a conf/paths.yaml side file.
+data_root: /project/rrg-gberseth/esraa1/cosmos_policy_storage/LIBERO-Cosmos-Policy/success_only
+output_root: /project/rrg-gberseth/esraa1/cosmos_policy_storage/cosmos_dit_wm_output
+
+# kd_static never loads a teacher (see sweep.py's RunConfig.student_device docstring), so there's no
+# second accelerator to keep clear of -- overrides the "cuda:1" default that only matters for
+# kd_live's teacher+student split.
+student_device: cuda:0
+
+# Independent of whatever batch_size the dataset was built with (see distill_dataset.py's module
+# docstring) -- matches kd_train.yaml's own value for a like-for-like comparison against the live
+# path.
+max_iter: 30000
+batch_size: 8
+log_every: 10
+checkpoint_every: 100
+lr: 1.0e-4
+
+student_net_experiment_name: cosmos_kd_student_500m_libero
+# Output of: python -m cosmos_policy.scripts.cosmos_distill_experiments.kd.init_student_from_teacher
+#   --student_size 500m --out <this path>
+# Already built -- see README.md's "One-time prerequisite" section. Same init as the std_0.05
+# sibling run -- only the training data differs between the two.
+student_init_path: /project/rrg-gberseth/esraa1/cosmos_policy_storage/kd_inits/student_init_500m.pt
+
+# This dataset was built with x0 (ground truth) stored specifically to support this -- see
+# kd/params.py's StaticTrainParams docstring. Matches kd_train.yaml's own value and the std_0.05
+# sibling run's.
+ground_truth_loss_weight: 0.5
+
+# build_distill_dataset.py's --out_dir for the std_0.1 variant (see
+# conf/runs/datasets/build_distill_dataset_std_0.1.yaml).
+distill_dataset_dir: /project/rrg-gberseth/esraa1/cosmos_policy_storage/kd_distill_dataset_std_0_10
+
+seed: 0
+time_limit: "12:00:00"
+mem: "80G"
+cpus: 8
+account: rrg-gberseth
+filename: kd_static_500m_std_0_10.sbatch

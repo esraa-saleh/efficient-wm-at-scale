@@ -1,0 +1,40 @@
+# A genuinely SMALL, fast smoketest of build_synthetic_distill_dataset.py -- same reasoning as
+# build_distill_dataset_std_0.05_smoketest.yaml (see its own comments for why a naive "just shrink
+# num_batches/batch_size" smoketest stays slow): single suite, and rollout_data_dir points at the
+# same pre-built all_episodes_smoketest_subset/ (20 symlinks, 18 success + 2 failure, all
+# suite=libero_object) so both demo and rollout sample types actually get drawn.
+#
+# Writes to its own synthetic_dataset_dir -- never touches the real
+# kd_synthetic_distill_dataset_std_0_05.
+job_name: cosmos_distill_experiments_build_synthetic_distill_dataset_smoketest
+run_type: build_synthetic_distill_dataset
+gpus: 1
+
+data_root: /project/rrg-gberseth/esraa1/cosmos_policy_storage/LIBERO-Cosmos-Policy/success_only
+output_root: /project/rrg-gberseth/esraa1/cosmos_policy_storage/cosmos_dit_wm_output
+
+suites: [libero_object_regen]
+rollout_data_dir: /project/rrg-gberseth/esraa1/cosmos_policy_storage/LIBERO-Cosmos-Policy/all_episodes_smoketest_subset
+
+# Deliberately tiny -- this exists to catch shape/logic errors (e.g. in the real
+# generate_samples_from_batch call graph -- see synthetic_generation.py's own module docstring for
+# the several ways that call graph is easy to get subtly wrong), not to produce a usable dataset.
+num_batches: 3
+batch_size: 4
+examples_per_shard: 50
+
+action_perturbation_std: 0.05
+num_denoising_steps: 1
+
+synthetic_dataset_dir: /project/rrg-gberseth/esraa1/cosmos_policy_storage/kd_synthetic_distill_dataset_std_0_05_smoketest
+
+# Short on purpose -- a smoketest requesting the real build's 11:59:00 walltime hurts queue
+# priority for no reason. Teacher loading alone can take many minutes depending on per-node
+# filesystem contention (see submit_sweep.py's TEACHER_CHECKPOINT_PREFETCH, which mitigates but
+# doesn't eliminate this) -- 30 min leaves real margin beyond that plus the tiny dataset scan + 3
+# real multi-step generation calls.
+time_limit: "00:30:00"
+mem: "80G"
+cpus: 8
+account: rrg-gberseth
+filename: build_synthetic_distill_dataset_smoketest.sbatch

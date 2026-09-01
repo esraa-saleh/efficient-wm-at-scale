@@ -1,0 +1,37 @@
+# Third leg of the 1B comparison, alongside baseline_1b_train.yaml (same teacher-derived init, no
+# KD) and the 6 kd_static_500m_std_0_05_* variants (same teacher-derived init, KD loss): this one
+# is the SAME architecture/data/update-count/loss as baseline_1b_train.yaml but with NO
+# checkpoint.load_path override at all -- cosmos_kd_student_1b_libero's own registration
+# (net_experiments.py) defaults checkpoint.load_path="" specifically so a consumer that doesn't set
+# it gets a genuine random init, not an implicit fallback to some other checkpoint (see that file's
+# own comment: "Empty here so nothing loads implicitly if a consumer forgets to."). No DCP-init
+# prerequisite needed here, unlike baseline_1b_train.yaml -- an empty load_path is the
+# already-proven default path (keys_to_resume_during_load's `if self.load_path and ...` guard is
+# simply False for "", same as train.yaml's own from-scratch tiny-net precedent).
+#
+# Isolates whether the teacher-derived init is actually doing anything for standard (non-KD)
+# training, vs. standard training converging to a similar place regardless of starting point --
+# the KD students and baseline_1b_train can't distinguish "init helped" from "init was irrelevant"
+# on their own since both start from it.
+job_name: cosmos_kd_baseline_1b_train_scratch
+
+data_root: /project/rrg-gberseth/esraa1/cosmos_policy_storage/LIBERO-Cosmos-Policy/success_only
+output_root: /project/rrg-gberseth/esraa1/cosmos_policy_storage/cosmos_dit_wm_output
+
+experiment: cosmos_kd_student_1b_libero
+suites: [libero_object_regen]
+max_iter: 30000
+batch_size: 8
+# Distinct from baseline_1b_train's default 12341 and baseline_500m_train's 12343 -- Slurm can pack
+# multiple 1-GPU torchrun jobs from the same user onto one physical multi-GPU node, and two on the
+# SAME node with the SAME --master_port collide with EADDRINUSE (hit this for real between this run
+# and baseline_500m_train's first resubmit, job 19636971, killed in 6s -- see sweep.py's
+# RunConfig.master_port docstring). Only takes effect on this run's NEXT launch; doesn't touch the
+# already-running 19601996.
+checkpoint_save_iter: 200
+master_port: 12342
+time_limit: "12:00:00"
+mem: "40G"
+cpus: 8
+account: rrg-gberseth
+filename: baseline_1b_train_scratch.sbatch

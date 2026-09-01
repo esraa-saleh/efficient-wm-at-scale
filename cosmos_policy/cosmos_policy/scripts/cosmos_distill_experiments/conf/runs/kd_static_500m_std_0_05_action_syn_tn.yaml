@@ -1,0 +1,38 @@
+# Same run as kd_static_500m_std_0_05_syn_tn.yaml -- identical hyperparameters, identical
+# distill_dataset_dir/synthetic_dataset_dir -- except run_type: kd_static_action routes
+# build_sbatch_script() to train_kd_static_action.py instead of train_kd_static.py, which drops
+# both future-state AND value prediction from BOTH loss terms: only the action-chunk slot of the
+# shared video latent is supervised (see train_kd_static_action.py's own module docstring). Data
+# variant 1 of 2: original data + teacher-analogous synthetic. Composed into
+# SweepConfig.runs.kd_static_500m_std_0_05_action_syn_tn by ../config.yaml's
+# `runs@runs.kd_static_500m_std_0_05_action_syn_tn: kd_static_500m_std_0_05_action_syn_tn` defaults
+# entry.
+job_name: cosmos_distill_experiments_kd_static_500m_std_0_05_action_syn_tn
+run_type: kd_static_action
+gpus: 1
+
+data_root: /project/rrg-gberseth/esraa1/cosmos_policy_storage/LIBERO-Cosmos-Policy/success_only
+output_root: /project/rrg-gberseth/esraa1/cosmos_policy_storage/cosmos_dit_wm_output
+
+student_device: cuda:0
+
+max_iter: 60000
+batch_size: 8
+log_every: 10
+checkpoint_every: 100
+lr: 1.0e-4
+
+student_net_experiment_name: cosmos_kd_student_500m_libero
+student_init_path: /project/rrg-gberseth/esraa1/cosmos_policy_storage/kd_inits/student_init_500m.pt
+
+ground_truth_loss_weight: 0.5
+
+distill_dataset_dir: /project/rrg-gberseth/esraa1/cosmos_policy_storage/kd_distill_dataset_std_0_05
+synthetic_dataset_dir: /project/rrg-gberseth/esraa1/cosmos_policy_storage/kd_teacher_native_distill_dataset
+
+seed: 0
+time_limit: "12:00:00"
+mem: "150G"
+cpus: 8
+account: rrg-gberseth
+filename: kd_static_500m_std_0_05_action_syn_tn.sbatch

@@ -45,6 +45,7 @@ from cosmos_policy.datasets.dataset_utils import (
     calculate_dataset_statistics,
     decode_jpeg_bytes_dataset,
     decode_single_jpeg_frame,
+    filter_hdf5_files_by_task_names,
     get_hdf5_files,
     preprocess_image,
     rescale_data,
@@ -78,6 +79,7 @@ class LIBERODataset(Dataset):
         treat_success_rollouts_as_demos: bool = False,
         return_value_function_returns: bool = True,
         gamma: float = 0.99,
+        task_names: list | None = None,
     ):
         """
         Initialize LIBERO dataset for training.
@@ -103,6 +105,13 @@ class LIBERODataset(Dataset):
             treat_success_rollouts_as_demos (bool): If True, copy successful rollout episodes into demonstration dataset (self.data)
             return_value_function_returns (bool): If True, returns value function returns for rollout episodes
             gamma (float): Discount factor for value function returns
+            task_names (list[str] | None): If given, restricts both `data_dir` and `rollout_data_dir`
+                to files whose name contains one of these (case-insensitive substring match, e.g.
+                ["ketchup"]) -- lets you select a subset of a suite's tasks (down to just one)
+                without copying/symlinking a separate directory: point data_dir at the real suite
+                dir as usual (dataset_statistics.json still resolves from there, so normalization
+                stays consistent with the full suite) and this filters which files it actually
+                reads. None (default) loads every task in data_dir, unchanged from before.
         """
         self.data_dir = data_dir
         self.chunk_size = chunk_size
@@ -123,6 +132,7 @@ class LIBERODataset(Dataset):
         self.treat_success_rollouts_as_demos = treat_success_rollouts_as_demos
         self.return_value_function_returns = return_value_function_returns
         self.gamma = gamma
+        self.task_names = task_names
 
         assert self.use_wrist_images or self.use_third_person_images, (
             "Must use at least one of wrist images or third-person images!"
@@ -130,6 +140,7 @@ class LIBERODataset(Dataset):
 
         # Get all HDF5 files in data directory
         hdf5_files = get_hdf5_files(data_dir)
+        hdf5_files = filter_hdf5_files_by_task_names(hdf5_files, self.task_names)
 
         # In debug mode, only load the first demo
         if os.environ.get("DEBUGGING", "False").lower() == "true":
@@ -142,13 +153,19 @@ class LIBERODataset(Dataset):
                 f"Error: Rollout data directory '{self.rollout_data_dir}' does not exist."
             )
             rollout_hdf5_files = get_hdf5_files(self.rollout_data_dir)
+            rollout_hdf5_files = filter_hdf5_files_by_task_names(rollout_hdf5_files, self.task_names)
 
-        # Load all episodes into RAM
+        # Load all episodes' metadata (+ small per-step arrays: actions/proprio/returns) into RAM.
+        # Images/wrist_images are NOT eagerly loaded here -- they dominate memory (T x H x W x 3
+        # uint8 per episode) and are instead lazily read from the source HDF5 file per-episode in
+        # `_load_demo_episode_images`, called from `__getitem__`. This mirrors the lazy-loading
+        # already used for rollout data below (see `_load_rollout_episode_data`) and is what keeps
+        # multi-suite dataset construction from scaling host RAM with total dataset size.
         # Save dataset in this structure:
         # data = {
         #   episode index: {
-        #      images=primary images,
-        #      wrist_images=wrist images,
+        #      file_path=source HDF5 file, demo_key=key of this episode within it,
+        #      image_key/image_is_jpeg, wrist_key/wrist_is_jpeg=how to lazily re-read images,
         #      proprio=proprio states,
         #      actions=actions,
         #      command=language instruction,
@@ -176,22 +193,26 @@ class LIBERODataset(Dataset):
                     sorted_demo_keys = sorted(demo_keys_list, key=lambda x: int(x.split("_")[1]))
 
                     for demo_key in tqdm(sorted_demo_keys):
-                        # Determine whether the dataset stores raw RGB frames or JPEG bytes
+                        # Determine whether the dataset stores raw RGB frames or JPEG bytes, and
+                        # record enough to lazily re-read the pixel data later -- read `.shape`
+                        # only (cheap, metadata-only in h5py) rather than slicing `[:]`, which
+                        # would pull the full (T, H, W, 3) uint8 array into RAM.
                         obs_group = f[f"data/{demo_key}/obs"]
                         # Agent-view (third-person) images
                         if "agentview_rgb" in obs_group:
-                            images = obs_group["agentview_rgb"][:]  # (T, H, W, 3) uint8
+                            image_key, image_is_jpeg = "agentview_rgb", False
                         elif "agentview_rgb_jpeg" in obs_group:
-                            images = decode_jpeg_bytes_dataset(obs_group["agentview_rgb_jpeg"])
+                            image_key, image_is_jpeg = "agentview_rgb_jpeg", True
                         else:
                             raise KeyError("Neither 'agentview_rgb' nor 'agentview_rgb_jpeg' found in HDF5 file.")
                         # Wrist-mounted camera images
                         if "eye_in_hand_rgb" in obs_group:
-                            wrist_images = obs_group["eye_in_hand_rgb"][:]
+                            wrist_key, wrist_is_jpeg = "eye_in_hand_rgb", False
                         elif "eye_in_hand_rgb_jpeg" in obs_group:
-                            wrist_images = decode_jpeg_bytes_dataset(obs_group["eye_in_hand_rgb_jpeg"])
+                            wrist_key, wrist_is_jpeg = "eye_in_hand_rgb_jpeg", True
                         else:
                             raise KeyError("Neither 'eye_in_hand_rgb' nor 'eye_in_hand_rgb_jpeg' found in HDF5 file.")
+                        num_steps = obs_group[image_key].shape[0]
                         # Actions
                         actions = f[f"data/{demo_key}/actions"][:].astype(
                             np.float32
@@ -211,14 +232,17 @@ class LIBERODataset(Dataset):
                             command = command + w + " "
                         command = command[:-1]
                         self.unique_commands.add(command)
-                        num_steps = len(images)
                         # Add value function returns if applicable
                         if self.return_value_function_returns:
                             returns = compute_monte_carlo_returns(num_steps, terminal_reward=1.0, gamma=self.gamma)
-                        # Add entry to dataset dict
+                        # Add entry to dataset dict (images/wrist_images loaded lazily, see above)
                         self.data[self.num_episodes] = dict(
-                            images=images,
-                            wrist_images=wrist_images,
+                            file_path=file,
+                            demo_key=demo_key,
+                            image_key=image_key,
+                            image_is_jpeg=image_is_jpeg,
+                            wrist_key=wrist_key,
+                            wrist_is_jpeg=wrist_is_jpeg,
                             proprio=proprio,
                             actions=actions,
                             command=command,
@@ -477,6 +501,32 @@ class LIBERODataset(Dataset):
 
             return episode_data
 
+    def _load_demo_episode_images(self, episode_metadata):
+        """
+        Lazily load a demo episode's images/wrist_images from its source HDF5 file, using the
+        file_path/demo_key/image_key recorded in `self.data` at construction time. Mirrors
+        `_load_rollout_episode_data`'s lazy loading, kept separate because demo episodes already
+        have their (cheap) actions/proprio/returns loaded eagerly in `self.data`.
+
+        Args:
+            episode_metadata (dict): Entry from `self.data` (has file_path, demo_key, image_key, etc.)
+
+        Returns:
+            tuple[np.ndarray, np.ndarray]: (images, wrist_images), each (T, H, W, 3) uint8
+        """
+        with h5py.File(episode_metadata["file_path"], "r") as f:
+            obs_group = f[f"data/{episode_metadata['demo_key']}/obs"]
+            if episode_metadata["image_is_jpeg"]:
+                images = decode_jpeg_bytes_dataset(obs_group[episode_metadata["image_key"]])
+            else:
+                images = obs_group[episode_metadata["image_key"]][:]
+            if episode_metadata["wrist_is_jpeg"]:
+                wrist_images = decode_jpeg_bytes_dataset(obs_group[episode_metadata["wrist_key"]])
+            else:
+                wrist_images = obs_group[episode_metadata["wrist_key"]][:]
+
+        return images, wrist_images
+
     def __len__(self):
         """Returns the total number of samples in the dataset."""
         # Return pre-calculated epoch length (which already accounts for suite balancing if enabled)
@@ -521,6 +571,12 @@ class LIBERODataset(Dataset):
             episode_idx, relative_step_idx = self._step_to_episode_map[global_step_idx]
             episode_metadata = None
             episode_data = self.data[episode_idx]
+            if "images" not in episode_data:
+                # Lazily load this episode's images/wrist_images from disk (not kept in
+                # self.data). Entries added via treat_success_rollouts_as_demos already carry
+                # real images/wrist_images arrays and skip this.
+                images, wrist_images = self._load_demo_episode_images(episode_data)
+                episode_data = {**episode_data, "images": images, "wrist_images": wrist_images}
             global_rollout_idx = -1  # Not applicable for demonstration data
         elif sample_type == "success_rollout":
             # Success rollout sample

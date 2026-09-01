@@ -19,7 +19,7 @@ CosmosDiTFrameReplaceBC -> real Cosmos Policy roadmap, see ../cosmos_dit_wm/cosm
 Section 5): the real production recipe (WAN2.1 VAE tokenizer, real 9-token frame-replace layout,
 real `HybridEDMSDE`, real *unmasked* joint loss across all 9 tokens) at "tiny" net size, restricted
 to the `libero_object` LIBERO suite. Every tunable value -- including the identifiers Hydra needs
-before composition starts (experiment_name, base_experiment) -- lives in conf/params.yaml, not as a
+before composition starts (experiment_name, base_experiment) -- lives in conf/runs/train.yaml, not as a
 literal here; see params.py's docstring for the schema/loader and for why these get applied to the
 training LazyDict below as a plain dict overlay rather than composed in via a `defaults` entry (a
 `defaults`-composed structured config was tried and confirmed broken end-to-end -- job 18781181).
@@ -48,7 +48,7 @@ from hydra.core.config_store import ConfigStore
 
 from cosmos_policy._src.imaginaire.lazy_config import LazyCall as L
 from cosmos_policy._src.imaginaire.lazy_config import LazyDict
-from cosmos_policy.scripts.cosmos_dit_wm.loss_csv_callback import LossCsvCallback
+from cosmos_policy.scripts.cosmos_distill_experiments.loss_csv_callback import LossCsvCallback
 from cosmos_policy.scripts.cosmos_distill_experiments import params
 
 # _src/imaginaire/config.py's Config.path_local reads this same env var for checkpoints, defaulting

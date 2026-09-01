@@ -1,0 +1,40 @@
+# Builds a static KD distillation dataset once, so train_kd_static.py can train (possibly several)
+# students against it repeatedly without ever re-paying the teacher's forward-pass cost -- see
+# kd/build_distill_dataset.py's module docstring. Originally one of two builds that differed in
+# action_perturbation_std -- that field (and the inline perturbation mechanism behind it) has since
+# been removed from build_distill_dataset.py entirely (see build_synthetic_distill_dataset.py's
+# module docstring for its standalone replacement), so this and the sibling _std_0.05.yaml are now
+# functionally IDENTICAL builds, differing only in job_name/distill_dataset_dir -- flagged, not yet
+# consolidated; a real rebuild under either name reproduces the same data as the other now. Not a
+# training run: no checkpoint, no resume -- see submit_sweep.py's dedicated build_distill_dataset
+# handling.
+job_name: cosmos_distill_experiments_build_distill_dataset_std_0_10
+run_type: build_distill_dataset
+gpus: 1
+
+# Same account storage as train.yaml -- each run's yaml is the one file that fully determines it,
+# so this is copied rather than shared via a conf/paths.yaml side file.
+data_root: /project/rrg-gberseth/esraa1/cosmos_policy_storage/LIBERO-Cosmos-Policy/success_only
+output_root: /project/rrg-gberseth/esraa1/cosmos_policy_storage/cosmos_dit_wm_output
+
+# All 4 suites + real rollout data, matching kd_train.yaml's own "fixed, full-scope" data regime --
+# the static set is meant to mirror the live path's recipe exactly, just precomputed once.
+suites: [libero_object_regen, libero_goal_regen, libero_spatial_regen, libero_10_regen]
+rollout_data_dir: /project/rrg-gberseth/esraa1/cosmos_policy_storage/LIBERO-Cosmos-Policy/all_episodes
+
+# 500 raw batches x 4 noise draws x batch_size 8 = 16,000 individual examples -- each gets
+# revisited ~15x over a 30,000-iteration, batch-size-8 training run, similar order of repetition to
+# what the live path already gets from its own finite (~470-episode) demo pool.
+num_batches: 500
+noise_draws_per_batch: 4
+batch_size: 8
+examples_per_shard: 500
+
+
+distill_dataset_dir: /project/rrg-gberseth/esraa1/cosmos_policy_storage/kd_distill_dataset_std_0_10
+
+time_limit: "11:59:00"
+mem: "80G"
+cpus: 8
+account: rrg-gberseth
+filename: build_distill_dataset_std_0_10.sbatch

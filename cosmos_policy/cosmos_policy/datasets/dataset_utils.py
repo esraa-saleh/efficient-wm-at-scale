@@ -67,6 +67,31 @@ def get_hdf5_files(data_dir: str, is_train: bool | None = None) -> list:
     return hdf5_files
 
 
+def filter_hdf5_files_by_task_names(hdf5_files: list, task_names: list | None) -> list:
+    """Restricts `hdf5_files` (as returned by `get_hdf5_files`) to whichever ones look like one of
+    `task_names` -- a case-insensitive substring match against each file's basename, so
+    task_names=["ketchup"] matches ".../pick_up_the_ketchup_and_place_it_in_the_basket_demo.hdf5"
+    without needing the full task name or file extension. `task_names=None` (the default) is a
+    no-op, returning `hdf5_files` unchanged -- this is opt-in, not a required argument.
+
+    Exists so restricting training/dataset-building to one (or a few) LIBERO tasks is just a config
+    value, not a separate physical directory of copied/symlinked files: point `data_dir` at the
+    real suite directory as usual (so dataset_statistics.json -- looked up by `data_dir`, not by
+    what's in `hdf5_files` -- still resolves to the real, full-suite stats) and pass `task_names`
+    to select which of that directory's files actually get loaded.
+
+    Raises if `task_names` is given but nothing matches, rather than silently falling back to every
+    file in `hdf5_files` -- a typo'd task name should fail loudly, not train on the wrong data.
+    """
+    if not task_names:
+        return hdf5_files
+    matched = [f for f in hdf5_files if any(name.lower() in os.path.basename(f).lower() for name in task_names)]
+    if not matched:
+        available = sorted(os.path.basename(f) for f in hdf5_files)
+        raise ValueError(f"task_names={task_names} matched none of the {len(hdf5_files)} files in this data_dir. Available: {available}")
+    return matched
+
+
 def apply_jpeg_compression_np(image_np: np.ndarray, quality: int = 95) -> np.ndarray:
     """Apply JPEG compression/decompression to a NumPy image or batch of images.
 

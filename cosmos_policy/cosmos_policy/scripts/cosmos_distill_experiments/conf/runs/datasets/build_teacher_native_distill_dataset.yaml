@@ -1,0 +1,40 @@
+# Builds a standalone teacher-native KD dataset -- see kd/build_teacher_native_distill_dataset.py's
+# and kd/synthetic_generation.py's own module docstrings for what this actually does (discard each
+# selected example's real action, let the teacher freely generate its own action/future-state/value
+# jointly via real multi-step sampling, nothing held fixed) and why it's a SEPARATE pipeline from
+# both build_distill_dataset_std_0.05.yaml/_std_0.1.yaml (real recorded action) and
+# build_synthetic_distill_dataset.yaml (recorded action perturbed and held fixed), not a mode of
+# either. Not a training run: no checkpoint, no resume -- see submit_sweep.py's dedicated
+# build_teacher_native_distill_dataset handling.
+job_name: cosmos_distill_experiments_build_teacher_native_distill_dataset
+run_type: build_teacher_native_distill_dataset
+gpus: 1
+
+# Same account storage as train.yaml -- each run's yaml is the one file that fully determines it,
+# so this is copied rather than shared via a conf/paths.yaml side file.
+data_root: /project/rrg-gberseth/esraa1/cosmos_policy_storage/LIBERO-Cosmos-Policy/success_only
+output_root: /project/rrg-gberseth/esraa1/cosmos_policy_storage/cosmos_dit_wm_output
+
+# All 4 suites + real rollout data -- both demo and rollout are valid source pools to synthesize
+# off of (LIBERODataset already draws from both every batch; see
+# build_teacher_native_distill_dataset.py's own module docstring).
+suites: [libero_object_regen, libero_goal_regen, libero_spatial_regen, libero_10_regen]
+rollout_data_dir: /project/rrg-gberseth/esraa1/cosmos_policy_storage/LIBERO-Cosmos-Policy/all_episodes
+
+# Same scale as build_synthetic_distill_dataset.yaml's own 2000 x 8 = 16,000 examples, for a fair
+# comparison between the two synthetic pipelines -- each example costs a real multi-step
+# generate_samples_from_batch call (not build_distill_dataset.py's cheap single denoise() call), so
+# this build takes meaningfully longer per example than the real-data build.
+num_batches: 2000
+batch_size: 8
+examples_per_shard: 500
+
+num_denoising_steps: 1  # matches real eval's own defaults -- see synthetic_generation.py's docstring
+
+teacher_native_dataset_dir: /project/rrg-gberseth/esraa1/cosmos_policy_storage/kd_teacher_native_distill_dataset
+
+time_limit: "11:59:00"
+mem: "80G"
+cpus: 8
+account: rrg-gberseth
+filename: build_teacher_native_distill_dataset.sbatch
