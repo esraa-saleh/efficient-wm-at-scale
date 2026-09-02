@@ -22,23 +22,32 @@ job_name: cosmos_kd_baseline_500m_train
 
 # Same account storage as baseline_1b_train.yaml -- each run's yaml is the one file that fully
 # determines it, so this is copied rather than shared via a conf/paths.yaml side file.
-data_root: /project/rrg-gberseth/esraa1/cosmos_policy_storage/LIBERO-Cosmos-Policy/success_only
-output_root: /project/rrg-gberseth/esraa1/cosmos_policy_storage/cosmos_dit_wm_output
+data_root: ${oc.env:COSMOS_POLICY_STORAGE,/project/rrg-gberseth/esraa1/cosmos_policy_storage}/LIBERO-Cosmos-Policy/success_only
+output_root: ${oc.env:COSMOS_POLICY_STORAGE,/project/rrg-gberseth/esraa1/cosmos_policy_storage}/cosmos_dit_wm_output
 
 experiment: cosmos_kd_student_500m_libero
 suites: [libero_object_regen]
 max_iter: 30000
 batch_size: 8
 checkpoint_save_iter: 200
+# Keep the GPU fed on Vulcan's shared/packed nodes -- num_workers=0 (imaginaire default) starved
+# the main thread and idled the GPU at ~175 s/iter on a contended node (experiment_journal.txt
+# 2026-09-02). Stage the ~3 GB suite to node-local NVMe so decode isn't also fighting /project.
+num_workers: 4
+stage_data_to_tmpdir: true
 extra_overrides:
-  checkpoint.load_path: /project/rrg-gberseth/esraa1/cosmos_policy_storage/kd_inits/student_init_500m_dcp
+  checkpoint.load_path: ${oc.env:COSMOS_POLICY_STORAGE,/project/rrg-gberseth/esraa1/cosmos_policy_storage}/kd_inits/student_init_500m_dcp
 # Distinct from baseline_1b_train's/baseline_1b_train_scratch's default 12341 -- Slurm can pack
 # multiple 1-GPU torchrun jobs from the same user onto one physical multi-GPU node, and two
 # torchrun runs on the SAME node with the SAME --master_port collide with EADDRINUSE (hit this for
 # real: job 19636971, killed in 6s). See sweep.py's RunConfig.master_port docstring.
 master_port: 12343
-time_limit: "12:00:00"
+# 30k iters at ~4.5 s/iter on an L40S (~1.5x the rrg-gberseth H100's ~3.0 s/iter; verified job
+# 762717) is ~37.5 h. 47h fits a full fresh run in ONE job (Vulcan's 3-day GPU tier) with margin
+# -- deliberately avoiding a mid-run resume, which crawled at ~175 s/iter (see
+# experiment_journal.txt 2026-09-02; cause not fully pinned down). Was "12:00:00" on rrg-gberseth.
+time_limit: "47:00:00"
 mem: "40G"
 cpus: 8
-account: rrg-gberseth
+account: ${oc.env:COSMOS_POLICY_ACCOUNT,rrg-gberseth}
 filename: baseline_500m_train.sbatch

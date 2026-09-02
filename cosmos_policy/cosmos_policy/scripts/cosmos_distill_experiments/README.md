@@ -69,7 +69,7 @@ block weights copied via the layer map, no projection needed since block shapes 
 
 ```bash
 .venv/bin/python -m cosmos_policy.scripts.cosmos_distill_experiments.kd.init_student_from_teacher \
-  --student_size 1b --out /project/rrg-gberseth/esraa1/cosmos_policy_storage/kd_inits/student_init_1b.pt
+  --student_size 1b --out $COSMOS_POLICY_STORAGE/kd_inits/student_init_1b.pt
 ```
 
 CPU is enough (no GPU/Slurm needed) -- this is a one-time weight copy, not training. The output
@@ -104,7 +104,7 @@ disposable sanity run instead of maintaining a second file just to shrink a few 
   runs.kd_train.job_name=cosmos_distill_experiments_kd_smoketest \
   runs.kd_train.max_iter=1 runs.kd_train.batch_size=2 runs.kd_train.log_every=1 \
   runs.kd_train.checkpoint_every=1 runs.kd_train.student_net_experiment_name=cosmos_kd_student_500m_libero \
-  runs.kd_train.student_init_path=/project/rrg-gberseth/esraa1/cosmos_policy_storage/kd_inits/student_init_500m.pt \
+  runs.kd_train.student_init_path=$COSMOS_POLICY_STORAGE/kd_inits/student_init_500m.pt \
   runs.kd_train.filename=kd_smoketest.sbatch
 ```
 
@@ -260,11 +260,11 @@ through the Trainer's own checkpointer at all.
 .venv/bin/python -m cosmos_policy.experiments.robot.libero.run_libero_eval \
   --model_family cosmos \
   --config cosmos_dit_wm_tiny_libero_from_scratch__inference_only \
-  --ckpt_path /project/rrg-gberseth/esraa1/cosmos_policy_storage/cosmos_dit_wm_output/cosmos_policy/cosmos_v2_finetune/cosmos_distill_experiments/checkpoints/iter_XXXXXXXXX \
+  --ckpt_path $COSMOS_POLICY_STORAGE/cosmos_dit_wm_output/cosmos_policy/cosmos_v2_finetune/cosmos_distill_experiments/checkpoints/iter_XXXXXXXXX \
   --task_suite_name libero_object \
-  --dataset_stats_path /project/rrg-gberseth/esraa1/cosmos_policy_storage/LIBERO-Cosmos-Policy/success_only/libero_object_regen/dataset_statistics.json \
-  --t5_text_embeddings_path /project/rrg-gberseth/esraa1/cosmos_policy_storage/LIBERO-Cosmos-Policy/success_only/t5_embeddings.pkl \
-  --local_log_dir /project/rrg-gberseth/esraa1/cosmos_policy_storage/cosmos_dit_wm_output/cosmos_policy/cosmos_v2_finetune/cosmos_distill_experiments/eval
+  --dataset_stats_path $COSMOS_POLICY_STORAGE/LIBERO-Cosmos-Policy/success_only/libero_object_regen/dataset_statistics.json \
+  --t5_text_embeddings_path $COSMOS_POLICY_STORAGE/LIBERO-Cosmos-Policy/success_only/t5_embeddings.pkl \
+  --local_log_dir $COSMOS_POLICY_STORAGE/cosmos_dit_wm_output/cosmos_policy/cosmos_v2_finetune/cosmos_distill_experiments/eval
 ```
 
 `--local_log_dir` isn't required (it defaults to `./experiments/logs`, wherever you happen to run
@@ -285,11 +285,11 @@ Same command, same pipeline -- no new eval code exists for KD students, just a d
 .venv/bin/python -m cosmos_policy.experiments.robot.libero.run_libero_eval \
   --model_family cosmos \
   --config cosmos_kd_student_1b_libero__inference_only \
-  --ckpt_path /project/rrg-gberseth/esraa1/cosmos_policy_storage/cosmos_dit_wm_output/cosmos_policy/cosmos_v2_finetune/cosmos_distill_experiments_kd_train/model.pt \
+  --ckpt_path $COSMOS_POLICY_STORAGE/cosmos_dit_wm_output/cosmos_policy/cosmos_v2_finetune/cosmos_distill_experiments_kd_train/model.pt \
   --task_suite_name libero_object \
-  --dataset_stats_path /project/rrg-gberseth/esraa1/cosmos_policy_storage/LIBERO-Cosmos-Policy/success_only/libero_object_regen/dataset_statistics.json \
-  --t5_text_embeddings_path /project/rrg-gberseth/esraa1/cosmos_policy_storage/LIBERO-Cosmos-Policy/success_only/t5_embeddings.pkl \
-  --local_log_dir /project/rrg-gberseth/esraa1/cosmos_policy_storage/cosmos_dit_wm_output/cosmos_policy/cosmos_v2_finetune/cosmos_distill_experiments_kd_train/eval
+  --dataset_stats_path $COSMOS_POLICY_STORAGE/LIBERO-Cosmos-Policy/success_only/libero_object_regen/dataset_statistics.json \
+  --t5_text_embeddings_path $COSMOS_POLICY_STORAGE/LIBERO-Cosmos-Policy/success_only/t5_embeddings.pkl \
+  --local_log_dir $COSMOS_POLICY_STORAGE/cosmos_dit_wm_output/cosmos_policy/cosmos_v2_finetune/cosmos_distill_experiments_kd_train/eval
 ```
 
 `--ckpt_path` here is `model.pt` (a bare state dict), not a `checkpoints/iter_XXXXXXXXX/` directory
@@ -301,9 +301,9 @@ module docstring). Before the sim eval, `kd/offline_eval.py` gives a much cheape
 .venv/bin/python -m cosmos_policy.scripts.cosmos_distill_experiments.kd.offline_eval \
   --student_experiment_name cosmos_kd_student_1b_libero \
   --student_checkpoint .../cosmos_distill_experiments_kd_train/model.pt \
-  --data_dir /project/rrg-gberseth/esraa1/cosmos_policy_storage/LIBERO-Cosmos-Policy/success_only/libero_object_regen \
-  --t5_text_embeddings_path /project/rrg-gberseth/esraa1/cosmos_policy_storage/LIBERO-Cosmos-Policy/success_only/t5_embeddings.pkl \
-  --dataset_stats_path /project/rrg-gberseth/esraa1/cosmos_policy_storage/LIBERO-Cosmos-Policy/success_only/libero_object_regen/dataset_statistics.json
+  --data_dir $COSMOS_POLICY_STORAGE/LIBERO-Cosmos-Policy/success_only/libero_object_regen \
+  --t5_text_embeddings_path $COSMOS_POLICY_STORAGE/LIBERO-Cosmos-Policy/success_only/t5_embeddings.pkl \
+  --dataset_stats_path $COSMOS_POLICY_STORAGE/LIBERO-Cosmos-Policy/success_only/libero_object_regen/dataset_statistics.json
 ```
 
 ## Output layout
@@ -315,8 +315,8 @@ storage:
 ```
 {output_root}/cosmos_policy/cosmos_v2_finetune/{job.name}/
 ├── checkpoints/iter_XXXXXXXXX/    # model/optim/scheduler/trainer shards + latest_checkpoint.txt
-├── train_loss.csv
-├── wandb/offline-run-.../         # WANDB_MODE=offline -- `wandb sync` to upload
+├── train_loss.csv                 # loss logging is CSV-only -- wandb is disabled (WANDB_MODE=disabled
+│                                  #   + job.wandb_mode=disabled, set by submit_sweep.py for every run)
 ├── DeviceMonitor/
 ├── config.yaml                    # resolved training config, dumped once at startup
 ├── slurm/{job.name}_<jobid>.{out,err}

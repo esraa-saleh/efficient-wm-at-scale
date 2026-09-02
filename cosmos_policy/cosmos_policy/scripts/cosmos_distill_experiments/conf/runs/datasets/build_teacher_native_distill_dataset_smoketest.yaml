@@ -10,11 +10,11 @@ job_name: cosmos_distill_experiments_build_teacher_native_distill_dataset_smoket
 run_type: build_teacher_native_distill_dataset
 gpus: 1
 
-data_root: /project/rrg-gberseth/esraa1/cosmos_policy_storage/LIBERO-Cosmos-Policy/success_only
-output_root: /project/rrg-gberseth/esraa1/cosmos_policy_storage/cosmos_dit_wm_output
+data_root: ${oc.env:COSMOS_POLICY_STORAGE,/project/rrg-gberseth/esraa1/cosmos_policy_storage}/LIBERO-Cosmos-Policy/success_only
+output_root: ${oc.env:COSMOS_POLICY_STORAGE,/project/rrg-gberseth/esraa1/cosmos_policy_storage}/cosmos_dit_wm_output
 
 suites: [libero_object_regen]
-rollout_data_dir: /project/rrg-gberseth/esraa1/cosmos_policy_storage/LIBERO-Cosmos-Policy/all_episodes_smoketest_subset
+rollout_data_dir: ${oc.env:COSMOS_POLICY_STORAGE,/project/rrg-gberseth/esraa1/cosmos_policy_storage}/LIBERO-Cosmos-Policy/all_episodes_smoketest_subset
 
 # Deliberately tiny -- this exists to catch shape/logic errors (e.g. in the real
 # generate_samples_from_batch call graph -- see synthetic_generation.py's own module docstring for
@@ -25,7 +25,7 @@ examples_per_shard: 50
 
 num_denoising_steps: 1
 
-teacher_native_dataset_dir: /project/rrg-gberseth/esraa1/cosmos_policy_storage/kd_teacher_native_distill_dataset_smoketest
+teacher_native_dataset_dir: ${oc.env:COSMOS_POLICY_STORAGE,/project/rrg-gberseth/esraa1/cosmos_policy_storage}/kd_teacher_native_distill_dataset_smoketest
 
 # Short on purpose -- a smoketest requesting the real build's 11:59:00 walltime hurts queue
 # priority for no reason. Teacher loading alone can take many minutes depending on per-node
@@ -35,5 +35,5 @@ teacher_native_dataset_dir: /project/rrg-gberseth/esraa1/cosmos_policy_storage/k
 time_limit: "00:30:00"
 mem: "80G"
 cpus: 8
-account: rrg-gberseth
+account: ${oc.env:COSMOS_POLICY_ACCOUNT,rrg-gberseth}
 filename: build_teacher_native_distill_dataset_smoketest.sbatch

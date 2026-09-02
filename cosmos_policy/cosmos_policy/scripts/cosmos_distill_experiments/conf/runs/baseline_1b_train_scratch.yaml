@@ -15,8 +15,8 @@
 # on their own since both start from it.
 job_name: cosmos_kd_baseline_1b_train_scratch
 
-data_root: /project/rrg-gberseth/esraa1/cosmos_policy_storage/LIBERO-Cosmos-Policy/success_only
-output_root: /project/rrg-gberseth/esraa1/cosmos_policy_storage/cosmos_dit_wm_output
+data_root: ${oc.env:COSMOS_POLICY_STORAGE,/project/rrg-gberseth/esraa1/cosmos_policy_storage}/LIBERO-Cosmos-Policy/success_only
+output_root: ${oc.env:COSMOS_POLICY_STORAGE,/project/rrg-gberseth/esraa1/cosmos_policy_storage}/cosmos_dit_wm_output
 
 experiment: cosmos_kd_student_1b_libero
 suites: [libero_object_regen]
@@ -33,5 +33,5 @@ master_port: 12342
 time_limit: "12:00:00"
 mem: "40G"
 cpus: 8
-account: rrg-gberseth
+account: ${oc.env:COSMOS_POLICY_ACCOUNT,rrg-gberseth}
 filename: baseline_1b_train_scratch.sbatch

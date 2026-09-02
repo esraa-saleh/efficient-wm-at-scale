@@ -14,13 +14,13 @@ gpus: 1
 
 # Same account storage as train.yaml -- each run's yaml is the one file that fully determines it,
 # so this is copied rather than shared via a conf/paths.yaml side file.
-data_root: /project/rrg-gberseth/esraa1/cosmos_policy_storage/LIBERO-Cosmos-Policy/success_only
-output_root: /project/rrg-gberseth/esraa1/cosmos_policy_storage/cosmos_dit_wm_output
+data_root: ${oc.env:COSMOS_POLICY_STORAGE,/project/rrg-gberseth/esraa1/cosmos_policy_storage}/LIBERO-Cosmos-Policy/success_only
+output_root: ${oc.env:COSMOS_POLICY_STORAGE,/project/rrg-gberseth/esraa1/cosmos_policy_storage}/cosmos_dit_wm_output
 
 # All 4 suites + real rollout data, matching kd_train.yaml's own "fixed, full-scope" data regime --
 # the static set is meant to mirror the live path's recipe exactly, just precomputed once.
 suites: [libero_object_regen, libero_goal_regen, libero_spatial_regen, libero_10_regen]
-rollout_data_dir: /project/rrg-gberseth/esraa1/cosmos_policy_storage/LIBERO-Cosmos-Policy/all_episodes
+rollout_data_dir: ${oc.env:COSMOS_POLICY_STORAGE,/project/rrg-gberseth/esraa1/cosmos_policy_storage}/LIBERO-Cosmos-Policy/all_episodes
 
 # 500 raw batches x 4 noise draws x batch_size 8 = 16,000 individual examples -- each gets
 # revisited ~15x over a 30,000-iteration, batch-size-8 training run, similar order of repetition to
@@ -31,10 +31,10 @@ batch_size: 8
 examples_per_shard: 500
 
 
-distill_dataset_dir: /project/rrg-gberseth/esraa1/cosmos_policy_storage/kd_distill_dataset_std_0_10
+distill_dataset_dir: ${oc.env:COSMOS_POLICY_STORAGE,/project/rrg-gberseth/esraa1/cosmos_policy_storage}/kd_distill_dataset_std_0_10
 
 time_limit: "11:59:00"
 mem: "80G"
 cpus: 8
-account: rrg-gberseth
+account: ${oc.env:COSMOS_POLICY_ACCOUNT,rrg-gberseth}
 filename: build_distill_dataset_std_0_10.sbatch

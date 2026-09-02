@@ -1,3 +1,6 @@
 /.cuda-name
 /build
 /checkpoints
+
+# submit_sweep.py-generated launcher scripts (regenerated from conf/runs/*.yaml + submit_sweep.py)
+cosmos_policy/scripts/cosmos_distill_experiments/*.sbatch

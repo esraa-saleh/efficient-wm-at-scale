@@ -11,8 +11,8 @@ gpus: 1
 
 # Same account storage as train.yaml -- each run's yaml is the one file that fully determines it,
 # so this is copied rather than shared via a conf/paths.yaml side file.
-data_root: /project/rrg-gberseth/esraa1/cosmos_policy_storage/LIBERO-Cosmos-Policy/success_only
-output_root: /project/rrg-gberseth/esraa1/cosmos_policy_storage/cosmos_dit_wm_output
+data_root: ${oc.env:COSMOS_POLICY_STORAGE,/project/rrg-gberseth/esraa1/cosmos_policy_storage}/LIBERO-Cosmos-Policy/success_only
+output_root: ${oc.env:COSMOS_POLICY_STORAGE,/project/rrg-gberseth/esraa1/cosmos_policy_storage}/cosmos_dit_wm_output
 
 # kd_static never loads a teacher (see sweep.py's RunConfig.student_device docstring), so there's no
 # second accelerator to keep clear of -- overrides the "cuda:1" default that only matters for
@@ -31,7 +31,7 @@ student_net_experiment_name: cosmos_kd_student_500m_libero
 # Output of: python -m cosmos_policy.scripts.cosmos_distill_experiments.kd.init_student_from_teacher
 #   --student_size 500m --out <this path>
 # Already built -- see README.md's "One-time prerequisite" section.
-student_init_path: /project/rrg-gberseth/esraa1/cosmos_policy_storage/kd_inits/student_init_500m.pt
+student_init_path: ${oc.env:COSMOS_POLICY_STORAGE,/project/rrg-gberseth/esraa1/cosmos_policy_storage}/kd_inits/student_init_500m.pt
 
 # This dataset was built with x0 (ground truth) stored specifically to support this -- see
 # kd/params.py's StaticTrainParams docstring. Matches every other run in this sweep, so the six
@@ -40,14 +40,14 @@ ground_truth_loss_weight: 0.5
 
 # Real recorded data (build_distill_dataset_std_0.05.yaml's output) -- same distill_dataset_dir
 # every run in this sweep trains its "real" term against.
-distill_dataset_dir: /project/rrg-gberseth/esraa1/cosmos_policy_storage/kd_distill_dataset_std_0_05
+distill_dataset_dir: ${oc.env:COSMOS_POLICY_STORAGE,/project/rrg-gberseth/esraa1/cosmos_policy_storage}/kd_distill_dataset_std_0_05
 # build_teacher_native_distill_dataset.yaml's --out_dir: teacher-analogous synthetic data (teacher's
 # own freely-generated action, future state, and value, sampled jointly, nothing held fixed).
-synthetic_dataset_dir: /project/rrg-gberseth/esraa1/cosmos_policy_storage/kd_teacher_native_distill_dataset
+synthetic_dataset_dir: ${oc.env:COSMOS_POLICY_STORAGE,/project/rrg-gberseth/esraa1/cosmos_policy_storage}/kd_teacher_native_distill_dataset
 
 seed: 0
 time_limit: "12:00:00"
 mem: "150G"
 cpus: 8
-account: rrg-gberseth
+account: ${oc.env:COSMOS_POLICY_ACCOUNT,rrg-gberseth}
 filename: kd_static_500m_std_0_05_syn_tn.sbatch

@@ -3207,3 +3207,310 @@ noisy for a ~3hr run (~350+ notifications). Stopped it and restarted polling eve
 reporting only a progress digest every 250 iterations, any NaN loss, real stderr error signatures,
 or the job's final terminal state -- ~12 notifications total instead of hundreds, same crash-
 detection coverage.
+
+============================================================
+2026-09-01 (later) -- FIRST run on Vulcan (aip-courvill / L40S): baseline_500m_train parity
+test vs. the 2026-08-25/26 rrg-gberseth/H100 run -- BLOCKED: training venv has no transformer_engine
+============================================================
+
+Goal: re-run baseline_500m_train + its eval companion on Vulcan and check the success-rate curve
+comes out roughly the same as the original run on the old cluster (rrg-gberseth, H100), i.e. a
+cluster-migration parity check, not a new experiment. Vulcan job IDs are 6-digit (762566/762567);
+the old cluster's were 8-digit (20065871 etc.) -- easy tell for which cluster a job ran on.
+
+--- Prep done this session (all on Vulcan) ---
+
+T5 text embeddings regenerated -> LIBERO-Cosmos-Policy/success_only/t5_embeddings.pkl (what every
+conf/runs/*.yaml's t5_text_embeddings_path points at). Two snags worth recording:
+  - First attempt died with a cryptic `TypeError: not a string` from SentencePiece. Cause: a
+    partial HF download of google-t5/t5-11b -- config.json came down but spiece.model /
+    tokenizer.json did not, so transformers silently fell back to the slow tokenizer with
+    vocab_file=None. Re-running the fetch (login node, has internet) completed the files and fixed
+    it. Now documented in KD_README.md step 1.
+  - OOM-killed at --mem=32G while loading the 45 GB fp32 t5-11b checkpoint into host RAM (T5Encoder
+    Model.from_pretrained reads the whole state dict before discarding the decoder half). Succeeded
+    at --mem=90G on 1x L40S; ~3:40 for the encoder load, <1s per embedding, 10 unique instructions.
+  - NOTE: t5-11b is currently cached under $COSMOS_POLICY_STORAGE/huggingface/hub, NOT the
+    $COSMOS_POLICY_STORAGE/hf_cache that activate_cuda_env.sh pins HF_HOME to (with HF_HUB_OFFLINE=1).
+    Not yet moved. Harmless for the baselines (they read the precomputed .pkl, not the live
+    encoder) but will matter for any teacher-loading / KD-dataset-build run.
+
+Code change to make submit_sweep.py cluster-portable: it hardcoded `--gres=gpu:h100:*` in 11
+places, which will never schedule on Vulcan (L40S only). Added RunConfig.gpu_type (sweep.py),
+defaulting from $COSMOS_POLICY_GPU_TYPE (else "l40s"), and collapsed all 11 sites to
+f"gpu:{run.gpu_type}:{run.gpus}". Also made the torchrun path pass --nproc_per_node={run.gpus}
+(was hardcoded 1, ignoring run.gpus entirely). activate_cuda_env.sh now exports
+COSMOS_POLICY_GPU_TYPE=l40s next to COSMOS_POLICY_STORAGE/ACCOUNT. Verified: default -> gpu:l40s:1;
+`runs.<name>.gpu_type=h100 runs.<name>.gpus=2` -> gpu:h100:2 + --nproc_per_node=2; all 20 run
+types still generate valid sbatch.
+
+Prereqs that were already on Vulcan /project storage from the earlier migration and did NOT need
+regenerating: LIBERO-Cosmos-Policy/success_only/libero_object_regen/ (+ its dataset_statistics*.json),
+kd_inits/student_init_500m_dcp.
+
+--- The launch (~23:19) ---
+
+  .venv/bin/python -m cosmos_policy.scripts.cosmos_distill_experiments.submit_sweep \
+    launch.only=[baseline_500m_train,baseline_500m_train_eval] \
+    runs.baseline_500m_train.job_name=cosmos_kd_baseline_500m_train_v2 \
+    runs.baseline_500m_train.filename=baseline_500m_train_v2.sbatch \
+    runs.baseline_500m_train_eval.job_name=cosmos_distill_experiments_baseline_500m_train_eval_v2 \
+    runs.baseline_500m_train_eval.filename=baseline_500m_train_eval_v2.sbatch \
+    runs.baseline_500m_train_eval.monitored_job_name=cosmos_kd_baseline_500m_train_v2 \
+    launch.submit=true
+
+  -> 762566  cosmos_kd_baseline_500m_train_v2        (train, gres gpu:l40s:1, node rack03-09)
+  -> 762567  cosmos_distill_experiments_baseline_500m_train_eval_v2  (eval, node rack11-15)
+
+Deliberately a "_v2" job_name (+ matching monitored_job_name, + distinct filename= so the .sbatch
+doesn't clobber the original's) and NO launch.wipe, so the original 2026-08-25/26 run
+(cosmos_kd_baseline_500m_train: trained to iter 25324/30000, checkpoint iter_000025200;
+..._train_eval: eval_results.csv through iter 23200) stays intact as the comparison baseline.
+
+Both runs printed `[WARNING] ... already exists and is non-empty (no checkpoint yet, but other
+files present ...)`. Benign: the <run_dir>/slurm/ dirs had been pre-created by dry-run
+submit_sweep invocations earlier this session (submit_sweep mkdir -p's run_dir/slurm even on a dry
+run), NOT by a real prior run. No checkpoint present -> training would have started from iter 0 off
+the DCP init.
+
+--- Result: training job 762566 FAILED after 27 s ---
+
+exitcode 1, at config-import time, before any training step:
+
+  run_train.py -> runpy scripts.train -> load_config -> _load_py_config -> config.config.py
+    -> config.config_v2 -> ...defaults.ema -> models.text2world_model
+    -> _src/imaginaire/utils/optim_instantiate.py -> _src/imaginaire/utils/fused_adam.py:17
+       `import transformer_engine as te`
+  ModuleNotFoundError: No module named 'transformer_engine'
+
+The Vulcan .venv has torch 2.9.1+cu128 and megatron_core 0.14.0 but no transformer_engine at all.
+pyproject.toml / uv.lock only pin transformer-engine under the cu128 extra (==2.2.0, built for
+torch 2.7) and the cu130 extra (==2.8.0, torch 2.9), both from the nvidia-cosmos dependency index;
+neither is installed here, and the venv's torch 2.9+cu128 matches neither locked TE wheel's
+(torch, cuda) pair. So `uv sync` as run on Vulcan has not produced a working training environment
+-- consistent with commit ae1650e ("kd folder replication requirements ... this does not work well
+yet").
+
+Eval job 762567 was still RUNNING after this (separate entrypoint, hadn't hit the same import yet
+or doesn't). It polls cosmos_kd_baseline_500m_train_v2/checkpoints/ which will now never be
+written, so it will idle its full ~24 h walltime for nothing -- should be scancel'd. Whether the
+eval / dataset-build entrypoints hit the same transformer_engine wall is untested.
+
+--- Status / what's actually blocking ---
+
+The Vulcan baseline-parity test is blocked on the TRAINING ENVIRONMENT, not on anything this
+session was chasing (config paths, /project storage layout, GPU type -- all now sorted). Need a
+transformer_engine install that matches torch 2.9+cu128 before any torchrun/Trainer entrypoint
+runs on Vulcan. The gpu_type change, the T5 embeddings, and the _v2 naming scheme are all reusable
+once that's fixed. No parity data yet -- nothing trained.
+
+============================================================
+2026-09-02 -- Vulcan training env FIXED (transformer_engine) + 1-iter smoketest passes;
+base-model checkpoint prefetch + wandb-off were the two follow-on walls
+============================================================
+
+Picking up the blocker from the previous entry. Worked it interactively on one L40S
+(salloc --account=aip-courvill --gres=gpu:l40s:1 --cpus-per-task=8 --mem=64G --time=3:00:00).
+
+--- Fix 1: transformer_engine (the actual blocker) ---
+
+Root cause was just that the Vulcan .venv had been built with a bare `uv sync` -- no CUDA extra,
+so torch resolved to an unpinned 2.9.1+cu128 and transformer-engine (extras-only) was never
+installed. Fix = build with the extra the setup script already intends:
+
+  uv sync --extra cu130 --group libero --python 3.10
+
+-> torch 2.9.0+cu130, transformer_engine 2.8.0, flash-attn, all the pinned nvidia-cu13 libs.
+`import torch, transformer_engine, megatron.core` clean afterwards. (cu130, not cu128: Vulcan's
+L40S driver is 13.2, and setup_cosmos_policy_uv.sh's own CUDA_EXTRA is already "cu130". cu128 is
+the rrg-gberseth/torch-2.7 combo.)
+
+Side note: `source activate_cuda_env.sh` after the re-sync spat ~40 `ln: File exists` errors from
+.cuda_so_shims/ -- its `[[ -e link ]] || ln -s` guard is false for a *dangling* symlink, so every
+shim left pointing at a now-removed cu128 .so retries and fails. Harmless (LD_LIBRARY_PATH still
+set) but `rm -rf .cuda_so_shims` before sourcing clears it. Flagged in KD_README step 0b; not yet
+fixed in the script itself (should just `rm -rf` the dir at the top of that block).
+
+--- Fix 2: base-model checkpoints resolved at config-import time ---
+
+Next wall, immediately after: config load ->
+cosmos_policy_experiment_configs.py calls get_checkpoint_path("hf://...") at MODULE LEVEL (every
+experiment registered eagerly on import), so run_train downloads these the moment the config
+loads. activate_cuda_env.sh sets HF_HUB_OFFLINE=1 + compute nodes are offline -> LocalEntryNotFound
+/ OfflineModeIsEnabled from checkpoint_db.get_checkpoint_by_hf. The two eager URIs (+ one lazy
+tokenizer) are:
+  hf://nvidia/Cosmos-Predict2-2B-Video2World/model-480p-16fps.pt      ~3.9 GB   GATED
+  hf://nvidia/Cosmos-Predict2-2B-Video2World/tokenizer/tokenizer.pth  ~0.5 GB   GATED (lazy)
+  hf://nvidia/Cosmos-Policy-ALOHA-Predict2-2B/...pt                    ~3.9 GB   ungated
+
+Only Cosmos-Predict2-2B-Video2World is gated (gated=auto -> instant on clicking "Agree and access
+repository"). Needed `hf auth login` (token now at $COSMOS_POLICY_STORAGE/hf_cache/token, user
+esraasaleh) then prefetched all three from the login node into $COSMOS_POLICY_STORAGE/hf_cache
+(8.8 GB total; the setup script does exactly this set + the LIBERO ckpt/dataset). The KD *teacher*
+(nvidia/Cosmos-Policy-LIBERO-Predict2-2B) is a separate ungated fetch, not needed for baselines.
+
+NOTE: this is the FIRST time hf_cache/ has been populated on Vulcan -- it was empty. The t5-11b
+encoder from the previous entry went to $COSMOS_POLICY_STORAGE/huggingface/ by mistake (not the
+hf_cache/ that activate_cuda_env.sh pins HF_HOME to); harmless for now (baselines read the .pkl,
+not the live encoder) but it should be moved.
+
+--- Fix 3: wandb still prompted for an API key ---
+
+submit_sweep.py already exported WANDB_MODE=offline and passed job.wandb_mode=offline. Changed
+both to `disabled`: (a) offline still writes a local wandb/ run dir and, more to the point, (b)
+the interactive smoketest without the override hit `wandb: Paste an API key` because the config
+default is wandb_mode="online" and wandb.init(mode=...) as an explicit arg BEATS the WANDB_MODE
+env var -- so `export WANDB_MODE=...` alone never worked for the torchrun path; job.wandb_mode is
+the one that matters. Now `disabled` in both places -> wandb is a complete no-op, no dir, no
+network. (submit_sweep.py + folder README output-tree updated.)
+
+--- Result: 1-iteration smoketest PASSES on Vulcan ---
+
+  torchrun --nproc_per_node=1 -m ...run_train -- experiment=cosmos_kd_student_500m_libero
+    job.name=smoke_1iter_500m job.wandb_mode=disabled trainer.max_iter=1 ...
+    checkpoint.load_path=$COSMOS_POLICY_STORAGE/kd_inits/student_init_500m_dcp
+
+-> "[SUCCESS] Done with training.", checkpoint iter_000000001 written (DCP model/optim/scheduler/
+trainer shards + latest_checkpoint.txt). DCP init loaded, one step ran, checkpoint saved. Env is
+good end-to-end.
+
+--- What's documented ---
+
+KD_README step 0 rewritten 0a-0d: (0a) uv sync WITH --extra cu130 --group libero, and why bare
+`uv sync` fails; (0b) rm -rf .cuda_so_shims + the env-knob table; (0c) the gated base-checkpoint
+prefetch (hf auth login + the hf_hub_download loop); (0d) the 1-iter validation run. Step 1 got an
+explicit teacher-checkpoint prefetch command, the t5 HF_HOME corrected to hf_cache, and the
+--mem=90G OOM note.
+
+--- Next ---
+
+scancel 762567 (orphaned eval from the failed first launch). Then re-launch baseline_500m_train_v2
++ eval via submit_sweep (regenerates the sbatch with wandb_mode=disabled). The
+cosmos_kd_baseline_500m_train_v2 dir has only an empty slurm/ -> starts clean from the DCP init.
+Still no parity data -- next entry should have the first real Vulcan training curve to compare
+against the 2026-08-25/26 rrg-gberseth run.
+
+--- 2026-09-02 ~00:04 -- real baseline_500m_train_v2 + eval relaunched on the fixed env ---
+
+Same submit_sweep command as the 2026-09-01 launch (job_name/filename/monitored_job_name all
+overridden to *_v2, launch.submit=true), now that the env works:
+
+  762717  cosmos_kd_baseline_500m_train_v2                        RUNNING  rack14-13  (12h limit)
+  762718  cosmos_distill_experiments_baseline_500m_train_eval_v2  RUNNING  rack16-06  (24h limit)
+
+Both sbatch regenerated -> now carry WANDB_MODE=disabled + job.wandb_mode=disabled and
+--gres=gpu:l40s:1. The "[WARNING] ... already exists and is non-empty (no checkpoint yet ...)" on
+both is still just the empty slurm/ dir from the earlier dry runs -- no checkpoint, so training
+starts clean from student_init_500m_dcp.
+
+OPEN: job 762567 (the orphaned eval from the 2026-09-01 failed launch) was never scancel'd and is
+STILL running -- and it monitors the SAME cosmos_kd_baseline_500m_train_v2/checkpoints/ that 762718
+now does. Two eval jobs racing on one eval_results.csv. scancel 762567.
+
+762717's logs were still empty (imports) at check time -- health not yet confirmed, but it's the
+byte-for-byte path the 1-iter smoketest already passed.
+
+--- 2026-09-02 ~00:15 -- "slowdown" investigated: it's ~1.5x (L40S vs H100), not a regression;
+walltime bumped 12h -> 36h; jobs relaunched ---
+
+762717 ran healthily (loss 8.0 -> ~0.6 by iter 401, tracking the old run's curve band-for-band:
+old/new means 7.92/7.90, 7.44/7.35, 4.38/4.29). Steady 4.5 s/iter -> 30k would be ~37.5h, way over
+the 12h walltime. Investigated the per-iter cost:
+
+  * GPU is NOT the question -- `srun --jobid=762717 --overlap nvidia-smi` on rack14-13:
+    util 100% / mem-util 100% / power 322-327W of 350W / P0 / throttle reasons 0x0 / 24GB of 46GB.
+    Pegged and near the power cap, no throttling. The training proc's single CPU core at 94% is
+    keeping the num_workers=0 loader fed (GPU never stalls). Compute + memory-bandwidth bound.
+  * The "~6x slower" from the previous entry was a BAD COMPARISON -- that 0.72 s/iter figure is
+    profile_node_throughput's, which measures the kd_static workload (combined_kd_loss, real +
+    synthetic double denoise() forward, random-init skip_load_model). The baseline here is the
+    plain torchrun/Trainer path with the full experiment config (EMA, FSDP, the real joint
+    objective). Not comparable.
+  * The right comparison: the OLD rrg-gberseth baseline_500m_train's OWN train_loss.csv timestamps
+    -> median 3.0 s/iter (1s timestamp resolution, so coarse; p90 4.0 s). So L40S is ~1.5x the
+    H100 here -- well under the ~3x peak-bf16-FLOPS gap, consistent with the job being
+    bandwidth-bound (L40S 0.86 TB/s vs H100 3.35 TB/s) rather than FLOPS-bound.
+  * The 49s hit at iter 5 both runs (old and new) is the `compile_tokenizer` callback firing at
+    its `compile_after_iterations: 4` -- one-off torch.compile of the tokenizer/VAE, not the DiT
+    (the DiT is not compiled in this config). Expected.
+  * The old H100 run ALSO never did 30k in one 12h job: it ran 24h49m for 25.3k iters across
+    resumes and stopped at 25324/30000. The 12h walltime was always too short for this config.
+
+Decision: no speedup worth chasing for a parity test (FP8 on L40S or torch.compile-ing the DiT
+could give 10-30% but both change numerics / break bf16 parity with the H100 run). Instead bumped
+`time_limit` 12:00:00 -> 36:00:00 in baseline_500m_train.yaml AND baseline_500m_train_eval.yaml
+(36h ~= the ~37.5h a full 30k needs; routes to Vulcan's 3-day GPU tier gpubase_bygpu_b4). Both
+yamls now carry a comment explaining the number.
+
+Relaunched (scancel 762717/762718, and finally 762567 the orphan):
+  762882  cosmos_kd_baseline_500m_train_v2         -- AUTO-RESUMES from iter_000000400 (checkpoint
+                                                      saved before the scancel; ~1 iter lost)
+  762883  ..._train_eval_v2
+Both PENDING at submit: 762882 reason "Nodes required ... DOWN, DRAINED or reserved for higher
+priority partitions" (generic backfill-wait message for the 3-day tier, which had 0 fully-idle
+nodes but ~110 partially-free `mix` nodes -- a 1-GPU/40G/8-CPU job should backfill). If it sits
+pending too long, fall back to 12:00:00 + resume.
+
+--- 2026-09-02 ~03:50 -- RESUME crawls at ~175 s/iter (GPU idle); root cause not pinned down;
+switched strategy to fresh-run-in-one-job + dataloader fix ---
+
+762882 (resumed from iter 400 on rack10-16) ran ~3h and got from iter 400 to ~462 -- steady
+169-195 s/iter, vs 762717's 4.5 s/iter. `nvidia-smi` on the node: GPU util 0%, power 93W (idle),
+our python proc pegged at ~190% CPU in R state, node load average 43 (shared node, other users'
+jobs at 100% CPU each). So: not GPU-slow, it's stuck on CPU between steps -- serial data
+loading/decode (num_workers=0) starved on a contended node, OR something resume-specific.
+CONFOUNDED: the only fast run (762717) was BOTH fresh AND on a different, less-loaded node
+(rack14-13, load 28). 764339 (rack12-10) was cancelled after 45s so it never gave a clean
+iteration-timing number. Not chasing the exact cause further right now.
+
+Also found while wiping: the eval run_dir had eval_failure_iter_000000200.log and
+eval_failure_iter_000000400.log -- 762718/762883 were FAILING to evaluate the checkpoints, not
+just idling. Separate issue (the eval/inference path on Vulcan), not yet looked at; doesn't block
+the training-loss parity comparison.
+
+Fix applied:
+  * submit_sweep.py + sweep.py: new RunConfig fields for the torchrun path --
+      num_workers (was hardcoded 0; now configurable, persistent_workers auto-follows)
+      stage_data_to_tmpdir (cp -rL the resolved data_dir to $SLURM_TMPDIR at job start, point
+        dataloader_train.dataset.data_dir at the copy; no-op fallback to /project on failure)
+  * baseline_500m_train.yaml: num_workers: 4, stage_data_to_tmpdir: true
+  * baseline_500m_train.yaml + _eval.yaml: time_limit 36h -> 47h -- enough to finish a FRESH 30k
+    in ONE job (~37.5h at 4.5 s/iter, less if the dataloader change helps), so no mid-run resume.
+
+Wiped v2 (both train + eval -- eval_results.csv had stale iter 200/400 rows from the aborted
+runs, which restart-safety would have wrongly skipped) and relaunched FRESH from iter 0:
+  765180  cosmos_kd_baseline_500m_train_v2
+  765181  ..._train_eval_v2
+Monitor now alarms loudly (not after 3h) if it ever exceeds 10 s/iter.
+
+--- 2026-09-02 ~06:00 -- the eval companion was failing EVERY checkpoint (nan); two missing
+LIBERO setup pieces on Vulcan, both fixed ---
+
+765180 (fresh training) is healthy: staged dataset to /tmp/train_data, num_workers=4 -> 2.3-2.5
+s/iter (FASTER than 762717's 4.5), GPU-bound, loss tracking the rrg-gberseth run band-for-band
+(iter ~2000: new 0.35 / old ~1.1 -- actually running a bit lower, watch). ETA ~18h, fits the 47h
+walltime with no resume. So the dataloader fix (num_workers + $SLURM_TMPDIR staging) was the fix
+for the 175 s/iter crawl.
+
+But the eval companion (765181, and 762718/762883 before it) logged status=failed / success_rate
+nan for every checkpoint. Cause in eval_failure_iter_*.log:
+  1. `libero/libero/__init__.py` calls input("...custom path...(Y/N)") at MODULE IMPORT if
+     ~/.libero/config.yaml is missing -> EOFError in a non-interactive subprocess. Fixed:
+     `printf 'N\n' | .venv/bin/python -c "import libero.libero"` once on the login node writes the
+     default config (points at the in-package bddl_files/init_files, assets at ~/.cache/libero).
+  2. LIBERO sim assets (~400 MB, 586 files: object meshes/scenes/textures from
+     jadechoghari/libero-assets) were not present -- get_assets_path() would try to download them,
+     but compute nodes are HF_HUB_OFFLINE=1. Fixed: pre-fetched to ~/.cache/libero/assets on the
+     login node via download_assets_from_huggingface(). Verified offline: `import libero.libero;
+     get_assets_path()` -> ~/.cache/libero/assets, benchmark.get_benchmark_dict()['libero_object']
+     loads, 10 tasks.
+
+periodic_libero_eval_static seeds "already evaluated" from every eval_results.csv row REGARDLESS
+of status (module docstring), so the running job would have skipped the failed iters. Fixed by:
+scancel 765181, rm eval_results.csv + eval_failure_*.log + eval_progress_*.json, relaunch as
+765591 -- re-evaluates every checkpoint from iter 200 (torchrun path keeps all checkpoints).
+Training 765180 untouched throughout.
+
+TODO: fold both LIBERO steps into setup_cosmos_policy_uv.sh / KD_README step 0 (the setup script
+already downloads the assets but apparently the import-prompt was answered interactively on the
+original machine and ~/.libero/config.yaml just never migrated).

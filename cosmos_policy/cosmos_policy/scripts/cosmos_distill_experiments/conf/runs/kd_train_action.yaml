@@ -11,13 +11,13 @@ gpus: 2
 
 # Same account storage as train.yaml -- each run's yaml is the one file that fully determines it,
 # so this is copied rather than shared via a conf/paths.yaml side file.
-data_root: /project/rrg-gberseth/esraa1/cosmos_policy_storage/LIBERO-Cosmos-Policy/success_only
-output_root: /project/rrg-gberseth/esraa1/cosmos_policy_storage/cosmos_dit_wm_output
+data_root: ${oc.env:COSMOS_POLICY_STORAGE,/project/rrg-gberseth/esraa1/cosmos_policy_storage}/LIBERO-Cosmos-Policy/success_only
+output_root: ${oc.env:COSMOS_POLICY_STORAGE,/project/rrg-gberseth/esraa1/cosmos_policy_storage}/cosmos_dit_wm_output
 
 # All 4 suites + real rollout data, matching kd_train.yaml/kd_train_av.yaml's own value exactly --
 # same training distribution, only the loss's supervised scope differs.
 suites: [libero_object_regen, libero_goal_regen, libero_spatial_regen, libero_10_regen]
-rollout_data_dir: /project/rrg-gberseth/esraa1/cosmos_policy_storage/LIBERO-Cosmos-Policy/all_episodes
+rollout_data_dir: ${oc.env:COSMOS_POLICY_STORAGE,/project/rrg-gberseth/esraa1/cosmos_policy_storage}/LIBERO-Cosmos-Policy/all_episodes
 
 max_iter: 30000
 batch_size: 8
@@ -30,7 +30,7 @@ student_net_experiment_name: cosmos_kd_student_1b_libero
 #   --student_size 1b --out <this path>
 # Must exist before this run launches -- see README.md's "Launch (KD)" section. Same init
 # kd_train.yaml/kd_train_av.yaml use -- only the loss's supervised scope differs between the three.
-student_init_path: /project/rrg-gberseth/esraa1/cosmos_policy_storage/kd_inits/student_init_1b.pt
+student_init_path: ${oc.env:COSMOS_POLICY_STORAGE,/project/rrg-gberseth/esraa1/cosmos_policy_storage}/kd_inits/student_init_1b.pt
 
 
 # See batch_prep.py's combined_kd_loss_action_only: the student's action loss is a blend of the
@@ -41,5 +41,5 @@ ground_truth_loss_weight: 0.5
 time_limit: "24:00:00"
 mem: "80G"
 cpus: 8
-account: rrg-gberseth
+account: ${oc.env:COSMOS_POLICY_ACCOUNT,rrg-gberseth}
 filename: kd_train_action.sbatch

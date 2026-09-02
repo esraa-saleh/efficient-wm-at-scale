@@ -19,8 +19,8 @@ job_name: cosmos_kd_baseline_1b_train
 
 # Same account storage as train.yaml -- each run's yaml is the one file that fully determines it,
 # so this is copied rather than shared via a conf/paths.yaml side file.
-data_root: /project/rrg-gberseth/esraa1/cosmos_policy_storage/LIBERO-Cosmos-Policy/success_only
-output_root: /project/rrg-gberseth/esraa1/cosmos_policy_storage/cosmos_dit_wm_output
+data_root: ${oc.env:COSMOS_POLICY_STORAGE,/project/rrg-gberseth/esraa1/cosmos_policy_storage}/LIBERO-Cosmos-Policy/success_only
+output_root: ${oc.env:COSMOS_POLICY_STORAGE,/project/rrg-gberseth/esraa1/cosmos_policy_storage}/cosmos_dit_wm_output
 
 experiment: cosmos_kd_student_1b_libero
 suites: [libero_object_regen]
@@ -34,9 +34,9 @@ extra_overrides:
   # Generated via init_student_from_teacher.py --student_size 1b --dcp_out <this dir> (see
   # experiment_journal.txt, 2026-08-25 entry, for why/how); verified to actually load, not just
   # exist, via a max_iter=1 smoketest before this file was pointed at it for the real run.
-  checkpoint.load_path: /project/rrg-gberseth/esraa1/cosmos_policy_storage/kd_inits/student_init_1b_dcp
+  checkpoint.load_path: ${oc.env:COSMOS_POLICY_STORAGE,/project/rrg-gberseth/esraa1/cosmos_policy_storage}/kd_inits/student_init_1b_dcp
 time_limit: "12:00:00"
 mem: "40G"
 cpus: 8
-account: rrg-gberseth
+account: ${oc.env:COSMOS_POLICY_ACCOUNT,rrg-gberseth}
 filename: baseline_1b_train.sbatch

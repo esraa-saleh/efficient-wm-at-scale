@@ -16,6 +16,19 @@ export XDG_CACHE_HOME="$UV_HOME/xdg_cache"
 export UV_PYTHON_INSTALL_DIR="$_cosmos_env_dir/.uv_python"
 export UV_CACHE_DIR="$_cosmos_env_dir/.uv_cache"
 export TMPDIR="$_cosmos_env_dir/.uv_tmp"
+# Single per-cluster knob for every large on-disk artifact this project reads
+# or writes (HF cache, LIBERO dataset, KD inits, training output). Everything
+# below - and every conf/runs/*.yaml, via ${oc.env:COSMOS_POLICY_STORAGE,...} -
+# derives from it, so moving to a new cluster is just changing this one line
+# (or exporting COSMOS_POLICY_STORAGE / COSMOS_POLICY_ACCOUNT before sourcing).
+# The value here is this checkout's current cluster; the yaml defaults still
+# carry the original rrg-gberseth paths for reference.
+export COSMOS_POLICY_STORAGE="${COSMOS_POLICY_STORAGE:-/project/aip-courvill/esraa1}"
+export COSMOS_POLICY_ACCOUNT="${COSMOS_POLICY_ACCOUNT:-aip-courvill}"
+# Slurm GRES GPU type for every job submit_sweep.py generates (--gres=gpu:<type>:<n>).
+# rrg-gberseth was "h100"; Vulcan / aip-courvill is "l40s". submit_sweep.py's RunConfig.gpu_type
+# reads this at submit time; override per run with runs.<name>.gpu_type=... on the CLI.
+export COSMOS_POLICY_GPU_TYPE="${COSMOS_POLICY_GPU_TYPE:-l40s}"
 # Pin HF_HOME to a fixed cache dir (overriding any HF_HOME/module default
 # from the surrounding shell) so downloads always land where the setup
 # script's pre-fetch step put them - see setup_cosmos_policy_uv.sh. This
@@ -23,8 +36,9 @@ export TMPDIR="$_cosmos_env_dir/.uv_tmp"
 # $HOME: checkpoints/tokenizers here run into the tens of GB, easily large
 # enough to blow a small $HOME quota on clusters (e.g. Compute Canada RRG
 # allocations) - same reasoning as DATASETS_DIR below. Override with
-# COSMOS_POLICY_HF_HOME if that path isn't right for you.
-export HF_HOME="${COSMOS_POLICY_HF_HOME:-/project/rrg-gberseth/esraa1/cosmos_policy_storage/hf_cache}"
+# COSMOS_POLICY_HF_HOME (full path) or COSMOS_POLICY_STORAGE (root) if this
+# path isn't right for you.
+export HF_HOME="${COSMOS_POLICY_HF_HOME:-$COSMOS_POLICY_STORAGE/hf_cache}"
 # Everything this setup script pre-fetches (pretrained checkpoint, tokenizer,
 # base-model checkpoints eagerly resolved by cosmos_policy_experiment_configs.py
 # at import time, LIBERO simulator assets) is already cached under HF_HOME
@@ -58,4 +72,7 @@ done < <(find "$_cosmos_site_packages/nvidia" -iname "*.so.*" -print0 2>/dev/nul
 _cosmos_ld_dirs="$_cosmos_so_shim_dir:$_cosmos_ld_dirs"
 export LD_LIBRARY_PATH="$_cosmos_ld_dirs${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 unset _cosmos_env_dir _cosmos_site_packages _cosmos_cuda_home _cosmos_ld_dirs _cosmos_so_shim_dir _cosmos_so _cosmos_so_base _cosmos_so_link
-export BASE_DATASETS_DIR="/project/rrg-gberseth/esraa1/cosmos_policy_storage"
+# Points training scripts (cosmos_policy.scripts.train, train_from_scratch_bc_demo.py)
+# at the dataset root (see LIBERO.md's BASE_DATASETS_DIR convention). Override
+# with COSMOS_POLICY_DATASETS_DIR if it differs from the storage root.
+export BASE_DATASETS_DIR="${COSMOS_POLICY_DATASETS_DIR:-$COSMOS_POLICY_STORAGE}"

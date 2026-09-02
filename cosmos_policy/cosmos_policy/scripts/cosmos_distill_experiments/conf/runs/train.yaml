@@ -7,8 +7,8 @@ job_name: cosmos_distill_experiments
 # Cluster-storage paths, specific to this account's allocation. Every other run in this folder
 # copies the same two values -- deliberately, so each run's yaml stays the one file that fully
 # determines it, rather than sharing a conf/paths.yaml side file.
-data_root: /project/rrg-gberseth/esraa1/cosmos_policy_storage/LIBERO-Cosmos-Policy/success_only
-output_root: /project/rrg-gberseth/esraa1/cosmos_policy_storage/cosmos_dit_wm_output
+data_root: ${oc.env:COSMOS_POLICY_STORAGE,/project/rrg-gberseth/esraa1/cosmos_policy_storage}/LIBERO-Cosmos-Policy/success_only
+output_root: ${oc.env:COSMOS_POLICY_STORAGE,/project/rrg-gberseth/esraa1/cosmos_policy_storage}/cosmos_dit_wm_output
 
 # Hydra *experiment* name (the recipe) this run both DEFINES (see the architecture fields below,
 # read by experiment.py to register it) and launches -- not the Slurm *job* name above. This exact
@@ -46,7 +46,7 @@ inference_sigma_max: 80.0
 inference_sigma_min: 4.0
 inference_job_group: cosmos_v2_inference
 
-# All 4 available suites (see /project/rrg-gberseth/esraa1/cosmos_policy_storage/LIBERO-Cosmos-Policy/success_only/),
+# All 4 available suites (see $COSMOS_POLICY_STORAGE/LIBERO-Cosmos-Policy/success_only/),
 # merged into their union (see sweep.py's RunConfig.suites) -- matches the real production recipe's
 # own libero_all_4_suites_dataset (cosmos_policy_experiment_configs.py), rather than the narrower
 # single-suite scope this job used before.
@@ -55,12 +55,12 @@ suites: [libero_object_regen, libero_goal_regen, libero_spatial_regen, libero_10
 # rollout_data_dir -- previously left unset (empty), which made demonstration_sampling_prob/
 # success_rollout_sampling_prob inert (LIBERODataset skips rollout loading entirely when this is
 # falsy), so every sample was a demonstration regardless of those knobs.
-rollout_data_dir: /project/rrg-gberseth/esraa1/cosmos_policy_storage/LIBERO-Cosmos-Policy/all_episodes
+rollout_data_dir: ${oc.env:COSMOS_POLICY_STORAGE,/project/rrg-gberseth/esraa1/cosmos_policy_storage}/LIBERO-Cosmos-Policy/all_episodes
 max_iter: 30000
 batch_size: 8
 checkpoint_save_iter: 200
 time_limit: "12:00:00"
 mem: "40G"
 cpus: 8
-account: rrg-gberseth
+account: ${oc.env:COSMOS_POLICY_ACCOUNT,rrg-gberseth}
 filename: train.sbatch

@@ -30,6 +30,7 @@ submit_sweep.py is a plain submission script with no relationship to it, so it u
 instead of going through that layer.
 """
 
+import os
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
@@ -135,6 +136,19 @@ class RunConfig:
     max_iter: int = MISSING
     batch_size: int = MISSING  # build_distill_dataset: query batch size only, see its own module docstring
 
+    # --- torchrun path only (the plain Trainer runs, e.g. baseline_*) ---
+    # Dataloader worker processes. The imaginaire configs default this to 0 -- all HDF5 read + JPEG
+    # decode + augmentation runs serially in the training process's main thread. Fine when that
+    # thread gets a full CPU core; on a contended node (Vulcan packs multiple jobs per node) it
+    # starves and the GPU sits idle -- a real run did ~175 s/iter at 0% GPU util this way
+    # (experiment_journal.txt 2026-09-02). >0 parallelizes decode across the job's
+    # --cpus-per-task; persistent_workers is turned on automatically when this is >0.
+    num_workers: int = 0
+    # Copy the resolved dataset dir to $SLURM_TMPDIR (node-local NVMe) at job start and train from
+    # the copy -- kills the per-batch /project round-trip and makes the run immune to shared-FS
+    # contention. Cheap for the LIBERO suites (~3 GB); do NOT enable for a data_dir of 100s of GB.
+    stage_data_to_tmpdir: bool = False
+
     # --- kd_live / kd_static ---
     log_every: int = 10
     # kd_live overwrites model.pt/train_state.pt in place at this cadence (only the latest ever
@@ -232,7 +246,16 @@ class RunConfig:
     cpus: int = MISSING  # sbatch --cpus-per-task
     account: str = MISSING  # sbatch --account
     filename: str = ""  # Output .sbatch filename; defaults to f"{job_name}.sbatch" if empty.
-    gpus: int = 1  # kd_live needs 2 (teacher + student); every other run_type needs 1.
+    # GPUs per job. kd_live needs 2 (teacher + student on cuda:0/cuda:1); every other run_type
+    # needs 1. The torchrun path also passes this as --nproc_per_node, so gpus>1 there launches
+    # that many DDP ranks (all other run_types are single-process and just get the extra devices).
+    gpus: int = 1
+    # Slurm GRES GPU type -- the "<type>" in "--gres=gpu:<type>:<gpus>". Cluster-specific
+    # (rrg-gberseth: "h100"; Vulcan / aip-courvill: "l40s"); no longer hardcoded in
+    # submit_sweep.py. Defaults from $COSMOS_POLICY_GPU_TYPE (exported by activate_cuda_env.sh
+    # alongside COSMOS_POLICY_STORAGE/ACCOUNT) so switching clusters needs no per-run yaml edit;
+    # still overridable per run in conf/runs/*.yaml or on the CLI (runs.<name>.gpu_type=...).
+    gpu_type: str = field(default_factory=lambda: os.environ.get("COSMOS_POLICY_GPU_TYPE", "l40s"))
 
 
 @dataclass

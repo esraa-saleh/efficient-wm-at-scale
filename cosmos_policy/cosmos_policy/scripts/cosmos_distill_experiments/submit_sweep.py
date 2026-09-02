@@ -316,7 +316,7 @@ TEACHER_CHECKPOINT_PREFETCH = """# Prefetch the full HF cache to this node's fas
 # not just one model repo). Safe no-op if SLURM_TMPDIR is unset or the copy fails: HF_HOME then
 # just keeps pointing at the original shared (slower) location.
 if [ -n "${SLURM_TMPDIR:-}" ]; then
-    _shared_hf_home="${COSMOS_POLICY_HF_HOME:-/project/rrg-gberseth/esraa1/cosmos_policy_storage/hf_cache}"
+    _shared_hf_home="${COSMOS_POLICY_HF_HOME:-${COSMOS_POLICY_STORAGE:-/project/rrg-gberseth/esraa1/cosmos_policy_storage}/hf_cache}"
     _local_hf_home="$SLURM_TMPDIR/hf_cache"
     if cp -r "$_shared_hf_home" "$_local_hf_home" 2>/dev/null; then
         export COSMOS_POLICY_HF_HOME="$_local_hf_home"
@@ -334,6 +334,7 @@ def build_sbatch_script(run: RunConfig) -> str:
     # CSV, wandb, DeviceMonitor, config.yaml) -- see module docstring for why this moved off
     # $HOME/./logs/, and the launch.wipe consequence of that.
     log_dir = run_dir / "slurm"
+    data_stage = ""  # set by the torchrun branch when run.stage_data_to_tmpdir is on
 
     if run.run_type == "kd_static":
         # Static-KD runs (kd/train_kd_static.py): no raw LIBERO data, no teacher -- trains purely
@@ -349,7 +350,7 @@ def build_sbatch_script(run: RunConfig) -> str:
             f'--synthetic_dataset_dir "{run.synthetic_dataset_dir}" '
             f"--run_dir {run_dir}"
         )
-        gres = f"gpu:h100:{run.gpus}"
+        gres = f"gpu:{run.gpu_type}:{run.gpus}"
     elif run.run_type == "kd_static_av":
         # Same as "kd_static" above, just dispatching to train_kd_static_av.py instead --
         # action/value-only loss (see that script's own module docstring), otherwise byte-for-byte
@@ -362,7 +363,7 @@ def build_sbatch_script(run: RunConfig) -> str:
             f'--synthetic_dataset_dir "{run.synthetic_dataset_dir}" '
             f"--run_dir {run_dir}"
         )
-        gres = f"gpu:h100:{run.gpus}"
+        gres = f"gpu:{run.gpu_type}:{run.gpus}"
     elif run.run_type == "kd_static_action":
         # Same as "kd_static" above, just dispatching to train_kd_static_action.py instead --
         # action-only loss (see that script's own module docstring), otherwise byte-for-byte
@@ -375,7 +376,7 @@ def build_sbatch_script(run: RunConfig) -> str:
             f'--synthetic_dataset_dir "{run.synthetic_dataset_dir}" '
             f"--run_dir {run_dir}"
         )
-        gres = f"gpu:h100:{run.gpus}"
+        gres = f"gpu:{run.gpu_type}:{run.gpus}"
     elif run.run_type == "kd_live":
         # KD runs (scripts/cosmos_distill_experiments/kd/): a plain `python -m ...kd.train_kd`
         # process, not torchrun/the imaginaire Trainer -- train_kd.py places the frozen teacher and
@@ -398,7 +399,7 @@ def build_sbatch_script(run: RunConfig) -> str:
             f'--synthetic_dataset_dir "{run.synthetic_dataset_dir}" '
             f"--run_dir {run_dir}"
         )
-        gres = f"gpu:h100:{run.gpus}"
+        gres = f"gpu:{run.gpu_type}:{run.gpus}"
     elif run.run_type == "kd_live_av":
         # Same as "kd_live" above, just dispatching to train_kd_av.py instead -- action/value-only
         # loss (see that script's own module docstring), otherwise byte-for-byte identical params/
@@ -415,7 +416,7 @@ def build_sbatch_script(run: RunConfig) -> str:
             f'--synthetic_dataset_dir "{run.synthetic_dataset_dir}" '
             f"--run_dir {run_dir}"
         )
-        gres = f"gpu:h100:{run.gpus}"
+        gres = f"gpu:{run.gpu_type}:{run.gpus}"
     elif run.run_type == "kd_live_action":
         # Same as "kd_live" above, just dispatching to train_kd_action.py instead -- action-only
         # loss (see that script's own module docstring), otherwise byte-for-byte identical
@@ -432,7 +433,7 @@ def build_sbatch_script(run: RunConfig) -> str:
             f'--synthetic_dataset_dir "{run.synthetic_dataset_dir}" '
             f"--run_dir {run_dir}"
         )
-        gres = f"gpu:h100:{run.gpus}"
+        gres = f"gpu:{run.gpu_type}:{run.gpus}"
     elif run.run_type == "build_distill_dataset":
         # One-shot data-generation job (kd/build_distill_dataset.py), not a training run -- no loss
         # curve, no resume, real output is run.distill_dataset_dir (the shards), not run_dir (which
@@ -450,7 +451,7 @@ def build_sbatch_script(run: RunConfig) -> str:
             f"{task_names_flag}"
             f"--out_dir {run.distill_dataset_dir}"
         )
-        gres = f"gpu:h100:{run.gpus}"
+        gres = f"gpu:{run.gpu_type}:{run.gpus}"
     elif run.run_type == "build_synthetic_distill_dataset":
         # One-shot data-generation job (kd/build_synthetic_distill_dataset.py) -- a SEPARATE
         # pipeline from "build_distill_dataset" above, not a mode of it (see that script's own
@@ -471,7 +472,7 @@ def build_sbatch_script(run: RunConfig) -> str:
             f"{task_names_flag}"
             f"--out_dir {run.synthetic_dataset_dir}"
         )
-        gres = f"gpu:h100:{run.gpus}"
+        gres = f"gpu:{run.gpu_type}:{run.gpus}"
     elif run.run_type == "build_teacher_native_distill_dataset":
         # One-shot data-generation job (kd/build_teacher_native_distill_dataset.py) -- a SEPARATE
         # pipeline from both "build_distill_dataset" and "build_synthetic_distill_dataset" above,
@@ -493,7 +494,7 @@ def build_sbatch_script(run: RunConfig) -> str:
             f"{task_names_flag}"
             f"--out_dir {run.teacher_native_dataset_dir}"
         )
-        gres = f"gpu:h100:{run.gpus}"
+        gres = f"gpu:{run.gpu_type}:{run.gpus}"
     elif run.run_type == "kd_static_eval":
         # Continuous full-suite eval companion to a kd_static run (kd/periodic_libero_eval_static.py)
         # -- a SEPARATE Slurm job, not a training run itself and never feeds back into training:
@@ -519,20 +520,41 @@ def build_sbatch_script(run: RunConfig) -> str:
             f"{eval_every_n_iters_flag}"
             f"--checkpoint_format {run.eval_checkpoint_format}"
         )
-        gres = f"gpu:h100:{run.gpus}"
+        gres = f"gpu:{run.gpu_type}:{run.gpus}"
     else:
         data_dir = resolve_dataset_dir(run.suites, run.data_root, run.output_root)
         loss_csv_path = run_dir / "train_loss.csv"
+
+        # Optionally stage the dataset to node-local scratch first (see RunConfig.stage_data_to_tmpdir).
+        # cp -rL dereferences the symlink-combo dir resolve_dataset_dir builds for multi-suite runs.
+        # Falls back to the /project path if $SLURM_TMPDIR is unset or the copy fails.
+        if run.stage_data_to_tmpdir:
+            data_stage = (
+                f'_src_data_dir="{data_dir}"\n'
+                f'export COSMOS_TRAIN_DATA_DIR="$_src_data_dir"\n'
+                f'if [ -n "${{SLURM_TMPDIR:-}}" ] && cp -rL "$_src_data_dir" "$SLURM_TMPDIR/train_data" 2>/dev/null; then\n'
+                f'    export COSMOS_TRAIN_DATA_DIR="$SLURM_TMPDIR/train_data"\n'
+                f'    echo "Staged dataset to $COSMOS_TRAIN_DATA_DIR"\n'
+                f'else\n'
+                f'    echo "WARNING: dataset staging to \\$SLURM_TMPDIR skipped/failed -- reading from $_src_data_dir" >&2\n'
+                f'fi\n\n'
+            )
+            data_dir_override = "$COSMOS_TRAIN_DATA_DIR"
+        else:
+            data_stage = ""
+            data_dir_override = str(data_dir)
+
+        persistent_workers = "true" if run.num_workers > 0 else "false"
         overrides = {
-            "job.wandb_mode": "offline",
+            "job.wandb_mode": "disabled",
             "job.name": run.job_name,
             "trainer.max_iter": str(run.max_iter),
             "trainer.logging_iter": "10",
             "dataloader_train.batch_size": str(run.batch_size),
-            "dataloader_train.num_workers": "0",
-            "dataloader_train.persistent_workers": "false",
+            "dataloader_train.num_workers": str(run.num_workers),
+            "dataloader_train.persistent_workers": persistent_workers,
             "checkpoint.save_iter": str(run.checkpoint_save_iter),
-            "dataloader_train.dataset.data_dir": data_dir,
+            "dataloader_train.dataset.data_dir": data_dir_override,
             "dataloader_train.dataset.rollout_data_dir": f'"{run.rollout_data_dir}"',
             "trainer.callbacks.loss_csv.csv_path": loss_csv_path,
             **dict(run.extra_overrides),
@@ -541,12 +563,12 @@ def build_sbatch_script(run: RunConfig) -> str:
             overrides["dataloader_train.dataset.task_names"] = "[" + ",".join(run.task_names) + "]"
         override_str = " ".join(f"{k}={v}" for k, v in overrides.items())
         cmd = (
-            f"torchrun --nproc_per_node=1 --master_port={run.master_port} "
+            f"torchrun --nproc_per_node={run.gpus} --master_port={run.master_port} "
             "-m cosmos_policy.scripts.cosmos_distill_experiments.run_train "
             "--config=cosmos_policy/config/config.py -- "
             f'experiment="{run.experiment}" {override_str}'
         )
-        gres = "gpu:h100:1"
+        gres = f"gpu:{run.gpu_type}:{run.gpus}"
 
     teacher_prefetch = TEACHER_CHECKPOINT_PREFETCH if run.run_type in TEACHER_LOADING_RUN_TYPES else ""
 
@@ -564,10 +586,10 @@ set -euo pipefail
 cd {REPO_ROOT}
 source .venv/bin/activate
 {teacher_prefetch}source activate_cuda_env.sh
-export WANDB_MODE=offline
+export WANDB_MODE=disabled
 export IMAGINAIRE_OUTPUT_ROOT={run.output_root}
 
-{cmd}
+{data_stage}{cmd}
 """
 
 

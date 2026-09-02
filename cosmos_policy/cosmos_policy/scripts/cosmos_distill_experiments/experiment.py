@@ -55,7 +55,7 @@ from cosmos_policy.scripts.cosmos_distill_experiments import params
 # to /tmp/imaginaire4-output (node-local, ephemeral -- gone if the job lands on a different node
 # next time). Point both checkpoints and our loss CSV at the same *persistent* project-storage
 # location by setting this before launching, e.g.:
-#   export IMAGINAIRE_OUTPUT_ROOT=/project/rrg-gberseth/esraa1/cosmos_policy_storage/cosmos_dit_wm_output
+#   export IMAGINAIRE_OUTPUT_ROOT="$COSMOS_POLICY_STORAGE/cosmos_dit_wm_output"
 _OUTPUT_ROOT = os.environ.get("IMAGINAIRE_OUTPUT_ROOT", "/tmp/imaginaire4-output")
 
 _PARAMS = params.load_params()

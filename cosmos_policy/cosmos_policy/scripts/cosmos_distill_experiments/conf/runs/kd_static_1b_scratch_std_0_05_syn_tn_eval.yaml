@@ -5,8 +5,8 @@ job_name: cosmos_distill_experiments_kd_static_1b_scratch_std_0_05_syn_tn_eval
 run_type: kd_static_eval
 gpus: 1
 
-data_root: /project/rrg-gberseth/esraa1/cosmos_policy_storage/LIBERO-Cosmos-Policy/success_only
-output_root: /project/rrg-gberseth/esraa1/cosmos_policy_storage/cosmos_dit_wm_output
+data_root: ${oc.env:COSMOS_POLICY_STORAGE,/project/rrg-gberseth/esraa1/cosmos_policy_storage}/LIBERO-Cosmos-Policy/success_only
+output_root: ${oc.env:COSMOS_POLICY_STORAGE,/project/rrg-gberseth/esraa1/cosmos_policy_storage}/cosmos_dit_wm_output
 
 # Must exactly match kd_static_1b_scratch_std_0_05_syn_tn.yaml's own job_name -- that's how
 # submit_sweep.py resolves which run's checkpoints/ to watch.
@@ -16,11 +16,11 @@ eval_task_suite_name: libero_object
 eval_num_trials_per_task: 3
 
 eval_inference_experiment: cosmos_kd_student_1b_libero__inference_only
-eval_dataset_stats_path: /project/rrg-gberseth/esraa1/cosmos_policy_storage/LIBERO-Cosmos-Policy/success_only/libero_object_regen/dataset_statistics.json
-eval_t5_text_embeddings_path: /project/rrg-gberseth/esraa1/cosmos_policy_storage/LIBERO-Cosmos-Policy/success_only/t5_embeddings.pkl
+eval_dataset_stats_path: ${oc.env:COSMOS_POLICY_STORAGE,/project/rrg-gberseth/esraa1/cosmos_policy_storage}/LIBERO-Cosmos-Policy/success_only/libero_object_regen/dataset_statistics.json
+eval_t5_text_embeddings_path: ${oc.env:COSMOS_POLICY_STORAGE,/project/rrg-gberseth/esraa1/cosmos_policy_storage}/LIBERO-Cosmos-Policy/success_only/t5_embeddings.pkl
 
 time_limit: "23:59:00"
 mem: "40G"
 cpus: 8
-account: rrg-gberseth
+account: ${oc.env:COSMOS_POLICY_ACCOUNT,rrg-gberseth}
 filename: kd_static_1b_scratch_std_0_05_syn_tn_eval.sbatch

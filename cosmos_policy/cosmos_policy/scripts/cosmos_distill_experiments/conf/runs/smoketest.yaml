@@ -12,8 +12,8 @@ job_name: cosmos_distill_experiments_smoketest
 
 # Same account storage as train.yaml -- each run's yaml is the one file that fully determines it,
 # so this is copied rather than shared via a conf/paths.yaml side file.
-data_root: /project/rrg-gberseth/esraa1/cosmos_policy_storage/LIBERO-Cosmos-Policy/success_only
-output_root: /project/rrg-gberseth/esraa1/cosmos_policy_storage/cosmos_dit_wm_output
+data_root: ${oc.env:COSMOS_POLICY_STORAGE,/project/rrg-gberseth/esraa1/cosmos_policy_storage}/LIBERO-Cosmos-Policy/success_only
+output_root: ${oc.env:COSMOS_POLICY_STORAGE,/project/rrg-gberseth/esraa1/cosmos_policy_storage}/cosmos_dit_wm_output
 
 # References train.yaml's already-registered experiment by name -- doesn't define its own
 # architecture (base_experiment/model_channels/etc.), unlike train.yaml.
@@ -25,5 +25,5 @@ checkpoint_save_iter: 5
 time_limit: "00:10:00"
 mem: "40G"
 cpus: 8
-account: rrg-gberseth
+account: ${oc.env:COSMOS_POLICY_ACCOUNT,rrg-gberseth}
 filename: smoketest.sbatch

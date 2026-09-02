@@ -12,14 +12,14 @@ gpus: 1
 
 # Same account storage as train.yaml -- each run's yaml is the one file that fully determines it,
 # so this is copied rather than shared via a conf/paths.yaml side file.
-data_root: /project/rrg-gberseth/esraa1/cosmos_policy_storage/LIBERO-Cosmos-Policy/success_only
-output_root: /project/rrg-gberseth/esraa1/cosmos_policy_storage/cosmos_dit_wm_output
+data_root: ${oc.env:COSMOS_POLICY_STORAGE,/project/rrg-gberseth/esraa1/cosmos_policy_storage}/LIBERO-Cosmos-Policy/success_only
+output_root: ${oc.env:COSMOS_POLICY_STORAGE,/project/rrg-gberseth/esraa1/cosmos_policy_storage}/cosmos_dit_wm_output
 
 # All 4 suites + real rollout data -- both demo and rollout are valid source pools to synthesize
 # off of (LIBERODataset already draws from both every batch; see
 # build_teacher_native_distill_dataset.py's own module docstring).
 suites: [libero_object_regen, libero_goal_regen, libero_spatial_regen, libero_10_regen]
-rollout_data_dir: /project/rrg-gberseth/esraa1/cosmos_policy_storage/LIBERO-Cosmos-Policy/all_episodes
+rollout_data_dir: ${oc.env:COSMOS_POLICY_STORAGE,/project/rrg-gberseth/esraa1/cosmos_policy_storage}/LIBERO-Cosmos-Policy/all_episodes
 
 # Same scale as build_synthetic_distill_dataset.yaml's own 2000 x 8 = 16,000 examples, for a fair
 # comparison between the two synthetic pipelines -- each example costs a real multi-step
@@ -31,10 +31,10 @@ examples_per_shard: 500
 
 num_denoising_steps: 1  # matches real eval's own defaults -- see synthetic_generation.py's docstring
 
-teacher_native_dataset_dir: /project/rrg-gberseth/esraa1/cosmos_policy_storage/kd_teacher_native_distill_dataset
+teacher_native_dataset_dir: ${oc.env:COSMOS_POLICY_STORAGE,/project/rrg-gberseth/esraa1/cosmos_policy_storage}/kd_teacher_native_distill_dataset
 
 time_limit: "11:59:00"
 mem: "80G"
 cpus: 8
-account: rrg-gberseth
+account: ${oc.env:COSMOS_POLICY_ACCOUNT,rrg-gberseth}
 filename: build_teacher_native_distill_dataset.sbatch
