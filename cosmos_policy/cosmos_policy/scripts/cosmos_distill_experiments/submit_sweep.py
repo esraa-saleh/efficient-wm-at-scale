@@ -223,6 +223,23 @@ def _build_teacher_native_distill_dataset_params(run: RunConfig) -> dict:
     return values
 
 
+def _build_teacher_on_demos_params(run: RunConfig) -> dict:
+    values = dict(
+        batch_size=run.batch_size,
+        dataloader_num_workers=run.build_num_workers,
+        num_denoising_steps=run.num_denoising_steps,
+        num_teacher_samples=run.num_teacher_samples,
+        max_episodes=run.build_max_episodes,
+        device=run.device,
+        seed=run.seed,
+    )
+    if run.teacher_experiment_name:
+        values["teacher_experiment_name"] = run.teacher_experiment_name
+    if run.teacher_checkpoint:
+        values["teacher_checkpoint"] = run.teacher_checkpoint
+    return values
+
+
 def _confirm(prompt: str) -> bool:
     """Blocking yes/no prompt. Fails safe (returns False, i.e. "don't proceed") if there's no TTY
     to prompt on, rather than hanging or silently proceeding."""
@@ -279,6 +296,7 @@ TEACHER_LOADING_RUN_TYPES = frozenset(
         "build_distill_dataset",
         "build_synthetic_distill_dataset",
         "build_teacher_native_distill_dataset",
+        "build_teacher_on_demos",
     }
 )
 
@@ -495,6 +513,28 @@ def build_sbatch_script(run: RunConfig) -> str:
             f"--out_dir {run.teacher_native_dataset_dir}"
         )
         gres = f"gpu:{run.gpu_type}:{run.gpus}"
+    elif run.run_type == "build_teacher_on_demos":
+        # One-shot data-generation job (kd/build_teacher_on_demos_dataset.py) -- NOT a
+        # build_*_distill_dataset (those write the ShardWriter KD format for train_kd_static.py).
+        # This writes a per-(episode, timestep) sidecar HDF5 tree that mirrors the suite and is
+        # consumed at LIBERODataset.__getitem__ time by the plain torchrun path (kwarg
+        # teacher_on_demos_dir). Real output is run.teacher_on_demos_build_dir; run_dir here holds
+        # only Slurm logs + the generated params.yaml. Resumable at source-file granularity (see
+        # that script's module docstring), so main()'s "already has output" check below is a
+        # resume/skip notice, not a wipe.
+        data_dir = resolve_dataset_dir(run.suites, run.data_root, run.output_root)
+        t5_text_embeddings_path = pathlib.Path(run.data_root) / "t5_embeddings.pkl"
+        params_path = _write_generated_params_yaml(_build_teacher_on_demos_params(run), run_dir / "params.yaml")
+        task_names_flag = f"--task_names {' '.join(run.task_names)} " if run.task_names else ""
+        cmd = (
+            "python -m cosmos_policy.scripts.cosmos_distill_experiments.kd.build_teacher_on_demos_dataset "
+            f"--build_params {params_path} "
+            f"--data_dir {data_dir} "
+            f"--t5_text_embeddings_path {t5_text_embeddings_path} "
+            f"{task_names_flag}"
+            f"--out_dir {run.teacher_on_demos_build_dir}"
+        )
+        gres = f"gpu:{run.gpu_type}:{run.gpus}"
     elif run.run_type == "kd_static_eval":
         # Continuous full-suite eval companion to a kd_static run (kd/periodic_libero_eval_static.py)
         # -- a SEPARATE Slurm job, not a training run itself and never feeds back into training:
@@ -544,6 +584,27 @@ def build_sbatch_script(run: RunConfig) -> str:
             data_stage = ""
             data_dir_override = str(data_dir)
 
+        # teacher_on_demos_{500m,1b}_train: the teacher-target sidecar tree, handled symmetrically
+        # with the suite -- staged alongside it when stage_data_to_tmpdir is on (it's a sibling of
+        # the suite dir, so `cp -rL` of the suite alone does NOT pick it up), else passed by
+        # absolute path. Empty (every other torchrun run) -> no override, exact baseline behavior.
+        teacher_on_demos_override = None
+        if run.teacher_on_demos_dir:
+            if run.stage_data_to_tmpdir:
+                data_stage += (
+                    f'_src_tod_dir="{run.teacher_on_demos_dir}"\n'
+                    f'export COSMOS_TEACHER_ON_DEMOS_DIR="$_src_tod_dir"\n'
+                    f'if [ -n "${{SLURM_TMPDIR:-}}" ] && cp -rL "$_src_tod_dir" "$SLURM_TMPDIR/teacher_on_demos" 2>/dev/null; then\n'
+                    f'    export COSMOS_TEACHER_ON_DEMOS_DIR="$SLURM_TMPDIR/teacher_on_demos"\n'
+                    f'    echo "Staged teacher_on_demos sidecar to $COSMOS_TEACHER_ON_DEMOS_DIR"\n'
+                    f'else\n'
+                    f'    echo "WARNING: teacher_on_demos staging to \\$SLURM_TMPDIR skipped/failed -- reading from $_src_tod_dir" >&2\n'
+                    f'fi\n\n'
+                )
+                teacher_on_demos_override = "$COSMOS_TEACHER_ON_DEMOS_DIR"
+            else:
+                teacher_on_demos_override = str(run.teacher_on_demos_dir)
+
         persistent_workers = "true" if run.num_workers > 0 else "false"
         overrides = {
             "job.wandb_mode": "disabled",
@@ -561,6 +622,18 @@ def build_sbatch_script(run: RunConfig) -> str:
         }
         if run.task_names:
             overrides["dataloader_train.dataset.task_names"] = "[" + ",".join(run.task_names) + "]"
+        if teacher_on_demos_override is not None:
+            overrides["dataloader_train.dataset.teacher_on_demos_dir"] = teacher_on_demos_override
+        if run.dataset_stats_override_path:
+            # Small JSON file (a few KB) read once at LIBERODataset.__init__ -- no staging needed,
+            # a direct /project (or HF cache) read is fine even with stage_data_to_tmpdir on.
+            overrides["dataloader_train.dataset.dataset_stats_override_path"] = str(
+                run.dataset_stats_override_path
+            )
+        if run.teacher_on_demos_num_samples != 1:
+            overrides["dataloader_train.dataset.teacher_on_demos_num_samples"] = str(
+                run.teacher_on_demos_num_samples
+            )
         override_str = " ".join(f"{k}={v}" for k, v in overrides.items())
         cmd = (
             f"torchrun --nproc_per_node={run.gpus} --master_port={run.master_port} "
@@ -652,6 +725,33 @@ def main(cfg: SweepConfig) -> None:
                 )
                 if not _confirm(f"Type 'yes' to overwrite {name} ({run.job_name})'s existing shards, anything else to abort: "):
                     raise SystemExit(f"Aborted: {name} ({run.job_name}) overwrite not confirmed.")
+        elif run.run_type == "build_teacher_on_demos":
+            # One-shot data-generation job, but UNLIKE the build_*_distill_dataset types above it
+            # IS resumable at source-file granularity (a sidecar whose root attr complete=True is
+            # skipped -- see kd/build_teacher_on_demos_dataset.py). So re-running without wiping
+            # continues where it left off; that's the intended workflow for per-task sharding /
+            # requeued jobs, not an accident to warn about.
+            dataset_dir = pathlib.Path(run.teacher_on_demos_build_dir)
+            existing = sorted(dataset_dir.rglob("*.teacher_on_demos.hdf5")) if dataset_dir.exists() else []
+            if cfg.launch.wipe:
+                if existing:
+                    print(
+                        f"[WARNING] {name} ({run.job_name}): about to PERMANENTLY DELETE "
+                        f"{len(existing)} existing sidecar file(s) under {dataset_dir}"
+                    )
+                    if not _confirm("Type 'yes' to permanently delete this, anything else to abort: "):
+                        raise SystemExit(f"Aborted: {name} ({run.job_name}) wipe not confirmed.")
+                    shutil.rmtree(dataset_dir)
+                    print(f"[WIPED] {name} ({run.job_name}): removed {dataset_dir}")
+                else:
+                    print(f"[WIPED] {name} ({run.job_name}): {dataset_dir} had no sidecars, nothing to remove")
+            elif existing:
+                print(
+                    f"[INFO] {name} ({run.job_name}): {dataset_dir} already has {len(existing)} sidecar "
+                    f"file(s) -- this run RESUMES (source files already marked complete are skipped). "
+                    f"Pass launch.wipe=true launch.only=[{name}] for a clean rebuild, or --force in the "
+                    f"build params to redo completed files."
+                )
         elif cfg.launch.wipe:
             if run_dir.exists():
                 checkpoint_marker = _existing_checkpoint_marker(run, run_dir)

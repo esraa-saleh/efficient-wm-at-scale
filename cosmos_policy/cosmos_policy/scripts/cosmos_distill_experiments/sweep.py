@@ -136,6 +136,33 @@ class RunConfig:
     max_iter: int = MISSING
     batch_size: int = MISSING  # build_distill_dataset: query batch size only, see its own module docstring
 
+    # --- torchrun path only: teacher_on_demos_{500m,1b}_train ---
+    # Non-empty -> a sidecar dataset root (built by kd/build_teacher_on_demos_dataset.py) whose
+    # per-(episode, timestep) teacher predictions replace the demo's action chunk / future image /
+    # future proprio / value as the joint denoising targets. Passed to the Trainer as
+    # dataloader_train.dataset.teacher_on_demos_dir; "" (default) is a complete no-op. A first-class
+    # field (not extra_overrides) so it can be staged to $SLURM_TMPDIR alongside the suite when
+    # stage_data_to_tmpdir is on. See kd/TEACHER_ON_DEMOS_PLAN.md.
+    teacher_on_demos_dir: str = ""
+    # Non-empty -> a local dataset_statistics.json path to construct LIBERODataset with INSTEAD OF
+    # the suite's own -- e.g. the teacher checkpoint's, so the student's (unmodified) current
+    # proprio is in the SAME normalization convention as this sidecar's action/future_proprio
+    # targets (which, per the 2026-09-04 fix, are stored verbatim in the teacher's own
+    # normalization -- no per-field renorm). Passed as
+    # dataloader_train.dataset.dataset_stats_override_path; "" (default) is a complete no-op. Only
+    # meaningful together with teacher_on_demos_dir. See
+    # kd/build_teacher_on_demos_dataset.py's NORMALIZATION docstring section.
+    dataset_stats_override_path: str = ""
+    # How many independent teacher samples K the teacher_on_demos_dir sidecar stores per
+    # (episode, timestep) -- passed to LIBERODataset as
+    # dataloader_train.dataset.teacher_on_demos_num_samples. 1 (default): no-op, byte-identical to
+    # today (each state visited once/epoch; a random one of the sidecar's samples is used if it
+    # happens to have K>1 anyway). >1: full-coverage mode -- the epoch expands to num_steps*K so
+    # every generated sample is visited exactly once per epoch instead of a random subset. Must
+    # match the build's own num_teacher_samples for that sidecar. See LIBERODataset's own
+    # teacher_on_demos_num_samples docstring.
+    teacher_on_demos_num_samples: int = 1
+
     # --- torchrun path only (the plain Trainer runs, e.g. baseline_*) ---
     # Dataloader worker processes. The imaginaire configs default this to 0 -- all HDF5 read + JPEG
     # decode + augmentation runs serially in the training process's main thread. Fine when that
@@ -216,6 +243,21 @@ class RunConfig:
     # are drop-in interchangeable there (identical ShardWriter schema), so no new training-side field
     # is needed, only this one for the BUILD run's own output path.
     teacher_native_dataset_dir: str = ""
+
+    # --- build_teacher_on_demos only ---
+    # Where kd/build_teacher_on_demos_dataset.py writes its sidecar HDF5 tree (a SIBLING of the
+    # suite dir). A teacher_on_demos_* training run then points its own teacher_on_demos_dir here.
+    # This build enumerates every demo timestep once (not num_batches random draws), so it has no
+    # num_batches / examples_per_shard; build_num_workers parallelizes the per-__getitem__
+    # full-episode image re-read that dominates its wall time; build_max_episodes caps it for a
+    # smoketest.
+    teacher_on_demos_build_dir: str = ""
+    build_num_workers: int = 8
+    build_max_episodes: int = 0  # smoketest / quick iteration: build only the first N demo episodes
+    # Independent teacher samples per (episode, timestep), stored separately (not averaged) --
+    # LIBERODataset picks one uniformly at random each time a state is sampled. 1 (default) is
+    # today's behavior. Cost is linear in K -- see kd/params.py's BuildTeacherOnDemosParams.
+    num_teacher_samples: int = 1
 
     # --- kd_static_eval only --- (see kd/periodic_libero_eval_static.py's module docstring)
     monitored_job_name: str = ""  # job_name of the kd_static run whose checkpoints/ to watch.

@@ -310,3 +310,77 @@ def load_build_teacher_native_params(
     if overrides:
         merged = OmegaConf.merge(merged, overrides)
     return OmegaConf.to_object(merged)
+
+
+@dataclass(frozen=True)
+class BuildTeacherOnDemosParams:
+    """build_teacher_on_demos_dataset.py's own hyperparameters -- same config-file pattern as
+    BuildTeacherNativeDistillDatasetParams (plain OmegaConf.load() + frozen dataclass schema),
+    loaded via that script's own `--build_params <path>` CLI flag.
+
+    Unlike the three build_*_distill_dataset builds, this one does NOT write the ShardWriter
+    (xt, sigma, condition, teacher_x0, x0) KD format -- it writes a per-(episode, timestep)
+    sidecar HDF5 tree that mirrors the source suite and is consumed at LIBERODataset.__getitem__
+    time (kwarg `teacher_on_demos_dir`) by the plain torchrun/Trainer path, no kd_* run type.
+    So there is no `noise_draws_per_batch` / `examples_per_shard` (no shards), and it adds
+    `dataloader_num_workers` (the read-through of the source suite dominates wall time -- each
+    __getitem__ re-reads a full episode's images), `max_episodes` (smoketest cap), and `force`
+    (rebuild a completed task file). The teacher query itself is
+    `synthetic_generation.generate_teacher_native_targets`, the same call
+    build_teacher_native_distill_dataset.py makes, at `num_denoising_steps` to match eval
+    (5 -- run_libero_eval.py's num_denoising_steps_action default, one joint call).
+    """
+
+    teacher_experiment_name: str = TEACHER_EXPERIMENT_NAME
+    teacher_checkpoint: str = DEFAULT_TEACHER_CHECKPOINT
+
+    data_dir: str = MISSING
+    t5_text_embeddings_path: str = MISSING
+    # This build is demo-keyed -- the sidecar has one group per demo episode. Leave "" (default).
+    rollout_data_dir: str = ""
+    # Restricts data_dir to files whose name contains one of these (case-insensitive substring
+    # match, e.g. ["ketchup"]) -- see LIBERODataset's own task_names docstring. Empty (default)
+    # builds every task. Per-task sharding across separate jobs is the recommended way to split
+    # the ~65k-timestep libero_object build into ~2-5h chunks (each writes its own sidecar file).
+    task_names: List[str] = field(default_factory=list)
+    out_dir: str = MISSING  # the sidecar root (SIBLING of data_dir); LIBERODataset's
+    # teacher_on_demos_dir kwarg points here.
+
+    batch_size: int = 8  # teacher query batch -- 8 fits a 44 GB L40S (24 OOMs the WAN2.1 VAE
+    # encode of a (B,3,33,224,224) batch, job 772798); matches build_teacher_native_distill_dataset
+    dataloader_num_workers: int = 8
+
+    # Match real LIBERO eval: run_libero_eval.py defaults num_denoising_steps_action=5 and (with
+    # ar_future_prediction / ar_value_prediction False) generates action + future state + value +
+    # future images from ONE generate_samples_from_batch(num_steps=5) call. Only the yaml
+    # (RunConfig.num_denoising_steps) is authoritative for a submit_sweep run; this default is the
+    # standalone-invocation fallback.
+    num_denoising_steps: int = 5
+
+    # Number of independent teacher samples generated per (episode, timestep) -- different initial
+    # diffusion noise, same conditioning (see build_teacher_on_demos_dataset.py's module
+    # docstring). Stored SEPARATELY, not averaged: LIBERODataset picks one uniformly at random
+    # each time a state is sampled, so training sees the teacher's genuine multimodality across
+    # epochs instead of a single (noisy) point estimate. Cost is linear in K (K independent
+    # generate_samples_from_batch calls per batch); 1 = today's behavior, byte-identical sidecar
+    # schema otherwise (just a leading size-1 K axis).
+    num_teacher_samples: int = 1
+
+    # Smoketest / quick iteration: build only the first N demo episodes (0 = all). A source file
+    # truncated mid-way is written complete=False so a later uncapped run rebuilds it in full.
+    max_episodes: int = 0
+
+    device: str = "cuda:0"
+    seed: int = 0
+    force: bool = False  # rebuild a source file whose sidecar is already marked complete=True
+
+
+def load_build_teacher_on_demos_params(path: str, overrides: Optional[dict] = None) -> BuildTeacherOnDemosParams:
+    """Same MISSING-before-`to_object()` ordering concern as `load_params` above -- see its
+    docstring."""
+    schema = OmegaConf.structured(BuildTeacherOnDemosParams)
+    values = OmegaConf.load(pathlib.Path(path))
+    merged = OmegaConf.merge(schema, values)
+    if overrides:
+        merged = OmegaConf.merge(merged, overrides)
+    return OmegaConf.to_object(merged)

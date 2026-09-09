@@ -70,6 +70,12 @@ defaults:
   - runs/datasets@runs.build_synthetic_distill_dataset_smoketest: build_synthetic_distill_dataset_smoketest
   - runs/datasets@runs.build_teacher_native_distill_dataset: build_teacher_native_distill_dataset
   - runs/datasets@runs.build_teacher_native_distill_dataset_smoketest: build_teacher_native_distill_dataset_smoketest
+  - runs/datasets@runs.build_teacher_on_demos: build_teacher_on_demos
+  - runs/datasets@runs.build_teacher_on_demos_smoketest: build_teacher_on_demos_smoketest
+  - runs@runs.teacher_on_demos_500m_train: teacher_on_demos_500m_train
+  - runs@runs.teacher_on_demos_500m_train_eval: teacher_on_demos_500m_train_eval
+  - runs@runs.teacher_on_demos_1b_train: teacher_on_demos_1b_train
+  - runs@runs.teacher_on_demos_1b_train_eval: teacher_on_demos_1b_train_eval
   - _self_
 
 hydra:

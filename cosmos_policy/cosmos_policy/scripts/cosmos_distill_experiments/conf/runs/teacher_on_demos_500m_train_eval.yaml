@@ -1,0 +1,27 @@
+# Continuous full-suite eval companion to teacher_on_demos_500m_train -- byte-for-byte
+# baseline_500m_train_eval.yaml (closed-loop LIBERO sim, no teacher targets involved: eval just
+# rolls out the trained student) with only job_name / monitored_job_name changed so its
+# success-rate curve is directly comparable to baseline_500m_train's.
+job_name: cosmos_distill_experiments_teacher_on_demos_500m_train_eval
+run_type: kd_static_eval
+gpus: 1
+
+data_root: ${oc.env:COSMOS_POLICY_STORAGE,/project/rrg-gberseth/esraa1/cosmos_policy_storage}/LIBERO-Cosmos-Policy/success_only
+output_root: ${oc.env:COSMOS_POLICY_STORAGE,/project/rrg-gberseth/esraa1/cosmos_policy_storage}/cosmos_dit_wm_output
+
+# Must exactly match teacher_on_demos_500m_train.yaml's own job_name.
+monitored_job_name: cosmos_teacher_on_demos_500m_train
+
+eval_task_suite_name: libero_object
+eval_num_trials_per_task: 3
+eval_checkpoint_format: dcp
+
+eval_inference_experiment: cosmos_kd_student_500m_libero__inference_only
+eval_dataset_stats_path: ${oc.env:COSMOS_POLICY_STORAGE,/project/rrg-gberseth/esraa1/cosmos_policy_storage}/LIBERO-Cosmos-Policy/success_only/libero_object_regen/dataset_statistics.json
+eval_t5_text_embeddings_path: ${oc.env:COSMOS_POLICY_STORAGE,/project/rrg-gberseth/esraa1/cosmos_policy_storage}/LIBERO-Cosmos-Policy/success_only/t5_embeddings.pkl
+
+time_limit: "47:00:00"
+mem: "40G"
+cpus: 8
+account: ${oc.env:COSMOS_POLICY_ACCOUNT,rrg-gberseth}
+filename: teacher_on_demos_500m_train_eval.sbatch
