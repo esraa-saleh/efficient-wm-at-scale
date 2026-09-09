@@ -4717,3 +4717,28 @@ blocking.
 
 The flow now: launch 9 build jobs -> wait for 10x complete=True -> one teacher_on_demos_500m_train
 + _eval -> compare mean-over-tasks success curve to baseline_500m_train (765180) -> 1b pair.
+
+--------------------------------------------------------------------------------
+2026-09-08  9 per-task K=5 sidecar build jobs SUBMITTED
+--------------------------------------------------------------------------------
+submit_sweep launch.submit=true launch.only=[build_teacher_on_demos_<9 tasks>] -- config commit
+099ac4d. All --gres=gpu:l40s:1, --time=22:00:00, --account=aip-courvill, K=5, 5 denoise steps,
+batch 8, all writing into the shared libero_object_regen__teacher_on_demos/ dir. ketchup NOT
+resubmitted (sidecar already complete=True, job 793246).
+
+  847345  build_teacher_on_demos_alphabet_soup      RUNNING  (rack02-11, started ~2026-09-09 shortly after submit)
+  847346  build_teacher_on_demos_bbq_sauce          PENDING
+  847347  build_teacher_on_demos_butter             PENDING
+  847348  build_teacher_on_demos_chocolate_pudding  PENDING
+  847349  build_teacher_on_demos_cream_cheese       PENDING
+  847350  build_teacher_on_demos_milk               PENDING
+  847351  build_teacher_on_demos_orange_juice       PENDING
+  847352  build_teacher_on_demos_salad_dressing     PENDING
+  847353  build_teacher_on_demos_tomato_sauce       PENDING
+
+Per-episode + per-file resumable: a timeout/preempt loses only the in-flight episode; rerun the
+same `submit_sweep ... launch.only=[build_teacher_on_demos_<task>]` to continue. Expected ~14-16h
+wall per task once running (K=5 ketchup 793246 was 13:45h; worst-case ~50-episode task ~16h).
+
+Done when all 10 *.teacher_on_demos.hdf5 in the build dir carry root attr complete=True. Then
+launch teacher_on_demos_500m_train + _eval (configs ready, commit 099ac4d).
