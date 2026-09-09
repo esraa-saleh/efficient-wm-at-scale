@@ -1,6 +1,6 @@
 # baseline_500m_train.yaml (same experiment, size, data states, torchrun/Trainer path, joint EDM
-# objective, teacher-derived DCP init, iteration count, staging, eval) with exactly three
-# deliberate deltas, all required for the teacher_on_demos recipe:
+# objective, teacher-derived DCP init, staging, eval) with four deliberate deltas, all required for
+# the teacher_on_demos recipe:
 #   1. teacher_on_demos_dir      -- the four joint denoising targets (action chunk, future image,
 #                                   future proprio, value) come from the teacher's own generation
 #                                   per demo state instead of the human demo.
@@ -11,6 +11,11 @@
 #                                   sidecar's action/future_proprio targets are stored verbatim in
 #                                   it (no per-field renorm). The eval companion points
 #                                   --dataset_stats_path at the same file.
+#   4. max_iter: 63000           -- K=5 makes the epoch 5x larger (N*5 ~= 336k (state,k) pairs over
+#                                   the 10 tasks, ~42k iters/epoch at batch 8). 63000 ~= 1.5 epochs,
+#                                   matching the ketchup K=5 run's coverage (6000 iters / 1.5 passes
+#                                   over its 31,705 pairs). baseline_500m_train's 30000 iters would
+#                                   be only ~0.7 epoch here.
 # Nothing in the training/loss path itself changes. Head-to-head partner of baseline_500m_train.
 # Trains on ALL 10 libero_object tasks at once (no task_names filter) -- needs every per-task
 # sidecar present + complete first. See kd/TEACHER_ON_DEMOS_PLAN.md.
@@ -21,7 +26,7 @@ output_root: ${oc.env:COSMOS_POLICY_STORAGE,/project/rrg-gberseth/esraa1/cosmos_
 
 experiment: cosmos_kd_student_500m_libero
 suites: [libero_object_regen]
-max_iter: 30000
+max_iter: 63000
 batch_size: 8
 checkpoint_save_iter: 200
 num_workers: 4
@@ -42,7 +47,10 @@ dataset_stats_override_path: ${oc.env:COSMOS_POLICY_STORAGE,/project/rrg-gberset
 # Distinct from baseline_500m_train's 12343 / baseline_1b's 12341 -- avoids torchrun rendezvous
 # EADDRINUSE if this lands on the same physical node as another 1-GPU torchrun job.
 master_port: 12345
-time_limit: "47:00:00"
+# ~2.4 s/iter (ketchup K=5) x 63000 ~= 42h + staging/margin. 60h routes to gpubase b4 (72h cap).
+# Job releases the node the moment iter hits max_iter regardless; torchrun path auto-resumes from
+# the latest checkpoint on resubmit if it ever runs out.
+time_limit: "60:00:00"
 mem: "40G"
 cpus: 8
 account: ${oc.env:COSMOS_POLICY_ACCOUNT,rrg-gberseth}

@@ -30,7 +30,10 @@ eval_inference_experiment: cosmos_kd_student_500m_libero__inference_only
 eval_dataset_stats_path: ${oc.env:COSMOS_POLICY_STORAGE,/project/rrg-gberseth/esraa1/cosmos_policy_storage}/LIBERO-Cosmos-Policy/success_only/teacher_libero_dataset_statistics.json
 eval_t5_text_embeddings_path: ${oc.env:COSMOS_POLICY_STORAGE,/project/rrg-gberseth/esraa1/cosmos_policy_storage}/LIBERO-Cosmos-Policy/success_only/t5_embeddings.pkl
 
-time_limit: "47:00:00"
+# Must outlast the train job (63000 iters, ~42h + margin). Eval polls checkpoints then idles to
+# walltime once training stops -- a TIMEOUT here after the last checkpoint is scored is expected,
+# no data lost (same pattern as the ketchup K=5 eval).
+time_limit: "60:00:00"
 mem: "40G"
 cpus: 8
 account: ${oc.env:COSMOS_POLICY_ACCOUNT,rrg-gberseth}

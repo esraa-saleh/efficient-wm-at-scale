@@ -4742,3 +4742,42 @@ wall per task once running (K=5 ketchup 793246 was 13:45h; worst-case ~50-episod
 
 Done when all 10 *.teacher_on_demos.hdf5 in the build dir carry root attr complete=True. Then
 launch teacher_on_demos_500m_train + _eval (configs ready, commit 099ac4d).
+
+--------------------------------------------------------------------------------
+2026-09-09  10-task K=5 sidecar build COMPLETE; 500m head-to-head LAUNCHED
+--------------------------------------------------------------------------------
+All 9 build jobs 847345-847353 COMPLETED (exit 0:0), 13:33-17:13 wall each. All 10
+*.teacher_on_demos.hdf5 present in libero_object_regen__teacher_on_demos/ (ketchup 793246 +
+the 9), each log ending "[done] <path>" + "Done: 1 sidecar file(s) written" -- [done] prints
+immediately after _finalize_sidecar sets root attr complete=True, and no job raised the
+"loader exhausted but N source file(s) never completed" RuntimeError, so all 10 carry
+complete=True. Harmless tail noise in a few .err logs: shutil.rmtree / .nfs* "Device or resource
+busy" during DataLoader temp-dir cleanup at interpreter shutdown, after the sidecar was written
+and the job exited 0. Cosmetic.
+
+Total demo timesteps across the 10 libero_object tasks (summed from build logs; ketchup 6341 per
+the K=1 journal entry): N ~= 67,185 states over ~464 episodes. K=5 full-coverage epoch =
+N*5 ~= 335,900 (state,k) pairs = ~42,000 iters at batch 8. baseline_500m_train's max_iter=30000
+would be only ~0.71 epoch here.
+
+DECISION: bump teacher_on_demos_500m_train.max_iter 30000 -> 63000 (~1.5 epochs, matches the
+ketchup K=5 run's 1.5-pass coverage; that run's success first HELD at ~0.75 epoch so 30k would
+land right at the edge with no margin). This is now a 4th deliberate delta from baseline_500m_train
+(was "shared iteration count"). time_limit 47:00:00 -> 60:00:00 on both train + eval (~2.4 s/iter
+x 63k ~= 42h + staging/margin; 60h routes to gpubase b4, 72h cap). Config edit only, not yet
+committed.
+
+  857664  cosmos_teacher_on_demos_500m_train            PENDING (submitted 2026-09-09)
+  857665  cosmos_distill_experiments_teacher_on_demos_500m_train_eval   PENDING
+  Both: max_iter=63000, batch 8, checkpoint_save_iter=200, teacher_on_demos_num_samples=5,
+  dataset_stats_override_path=<staged teacher stats>, no task_names -> all 10 tasks pooled,
+  checkpoint.load_path=student_init_500m_dcp. eval: full libero_object suite (no task_keyword),
+  3 trials/task, checkpoint_format dcp, eval_dataset_stats_path = same teacher stats.
+
+Next: when 857664 starts, check .out for both "Staged ... to $SLURM_TMPDIR" lines, an init-loaded
+line (not "Training from scratch"), finite loss, and the first iter_000000200 checkpoint; confirm
+857665 scores it into eval_results.csv. Also read the real dataset length off the train log and
+re-check 63000 ~= 1.5 epochs against it (N above is estimated from build logs). Then run to 63k,
+compare mean-over-tasks success curve vs baseline_500m_train (cosmos_kd_baseline_500m_train_v2
+765180, at iter 25200). Then the 1b pair -- FIX teacher_on_demos_1b_train.yaml time_limit
+"12:00:00" first (still too short).
