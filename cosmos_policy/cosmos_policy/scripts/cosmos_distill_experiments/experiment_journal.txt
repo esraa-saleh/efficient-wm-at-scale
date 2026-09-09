@@ -3514,3 +3514,1141 @@ Training 765180 untouched throughout.
 TODO: fold both LIBERO steps into setup_cosmos_policy_uv.sh / KD_README step 0 (the setup script
 already downloads the assets but apparently the import-prompt was answered interactively on the
 original machine and ~/.libero/config.yaml just never migrated).
+
+
+--- 2026-09-03 ~00:10 -- baseline_500m_train (765180) COMPLETED cleanly; eval 765591 still running ---
+
+765180 (cosmos_kd_baseline_500m_train, the fresh num_workers=4 + $SLURM_TMPDIR-staged run)
+finished 2026-09-03T00:12, State=COMPLETED, ExitCode 0:0, Elapsed 19:46:42 -- i.e. it reached
+max_iter=30000 and the Trainer force-saved + exited (not cancelled/timeout). So the dataloader
+fix held for a full run: ~2.3-2.5 s/iter start to finish, no mid-run resume, well inside the 47h
+walltime. Eval companion 765591 keeps polling checkpoints/ and scoring; not looked at its numbers
+yet. This is the non-KD BC-on-demos baseline the teacher_on_demos runs below compare against.
+
+
+--- 2026-09-03 -- NEW EXPERIMENT: teacher_on_demos (baseline recipe, teacher targets) ---
+
+Question: does training the SAME student, on the SAME demo states, through the SAME
+torchrun/Trainer path and joint EDM objective as baseline_{500m,1b}_train, but with the four
+joint denoising targets (action chunk + future image + future proprio + value) taken from the
+TEACHER's own generation instead of the human demo, beat plain BC on demos? This is the
+torchrun-path analogue of the kd_static teacher-native idea, but with ZERO change to the
+training/loss code -- only the dataloader's targets differ. Deliberately NOT a kd_* run type.
+
+Why it can't be a drop-in relabeled dataset dir: the future obs at timestep t is also timestep
+t+16's CURRENT obs, so rewriting it in the HDF5 corrupts another sample's input. The teacher
+targets have to be a per-(episode,timestep) sidecar consumed at LIBERODataset.__getitem__ time.
+
+Design + as-built notes: kd/TEACHER_ON_DEMOS_PLAN.md (committed alongside this). Shape of it:
+
+  * kd/build_teacher_on_demos_dataset.py -- new run_type "build_teacher_on_demos". Reads through
+    libero_object_regen via LIBERODataset (same kwargs as libero_all_4_suites_dataset EXCEPT
+    rollout_data_dir="", use_image_aug=False -- deterministic clean current-obs for the teacher to
+    condition on), enumerates every demo timestep once, runs
+    synthetic_generation.generate_teacher_native_targets (the SAME teacher query
+    build_teacher_native_distill_dataset.py makes -- get_data_and_condition ->
+    generate_samples_from_batch(num_steps=1) -> extract_action/value/proprio +
+    get_future_images_from_generated_samples), and writes a sidecar HDF5 tree mirroring the suite:
+    <task>_demo.teacher_on_demos.hdf5, one group per demo_key, datasets action_chunks (T,16,7) /
+    future_proprio (T,9) / value (T,) / future_{image,wrist}_image_jpeg (T,). Teacher action/
+    proprio stored in normalized model space (used verbatim). value stored as teacher_value*2-1
+    (generate_teacher_native_targets returns [0,1]; base LIBERODataset value_function_return is
+    [-1,1]). Future images stored at the teacher's native 224 (NOT the demo's 256).
+    Resumable at source-file granularity (root attr complete=True -> skipped); --task_names shards
+    it by task; --max_episodes / build_max_episodes caps it for a smoketest (a truncated file is
+    written complete=False so a real run rebuilds it).
+
+  * LIBERODataset (datasets/libero_dataset.py): new kwarg teacher_on_demos_dir="" (default = exact
+    no-op, byte-identical to before). When set, the sample_type=="demo" branch of __getitem__
+    overrides action_chunk / future_proprio / value_function_return from the sidecar and swaps the
+    teacher's future primary/wrist frames into decompressed_*_images[future_frame_idx]; also
+    resizes image_list to final_image_size (224) before the concat so the 224 teacher frames stack
+    with the 256 demo frames (real frames get exactly the 256->224 they'd get in preprocess_image
+    anyway; teacher frames pass through untouched -- no 224->256->224 blur round-trip). next_*
+    fields stay real (base loss never consumes them). Edge case future_frame_idx==relative_step_idx
+    (last step): keep the real frame as "future", still apply the non-image targets. Missing
+    sidecar / missing group -> FileNotFoundError/KeyError naming the path (no silent fallback).
+
+  * sweep.py RunConfig: teacher_on_demos_dir (torchrun), teacher_on_demos_build_dir +
+    build_num_workers + build_max_episodes (build). submit_sweep.py: _build_teacher_on_demos_params
+    helper, "build_teacher_on_demos" dispatch branch, added to TEACHER_LOADING_RUN_TYPES (HF-cache
+    prefetch) and a resume-aware main() one-shot branch (existing sidecar tree -> [INFO] RESUMES,
+    not an overwrite prompt); torchrun branch stages the sidecar dir to $SLURM_TMPDIR alongside
+    the suite (it's a SIBLING of the suite dir -- cp -rL of the suite alone doesn't pick it up) and
+    injects dataloader_train.dataset.teacher_on_demos_dir.
+
+  * kd/params.py: BuildTeacherOnDemosParams + loader.
+  * conf/config.yaml: 6 defaults lines.
+  * conf/runs/datasets/build_teacher_on_demos{,_smoketest}.yaml
+  * conf/runs/teacher_on_demos_{500m,1b}_train{,_eval}.yaml -- byte copies of the baseline_*
+    yamls + job_name + teacher_on_demos_dir + master_port (12345/12346, EADDRINUSE avoidance) +
+    filename. The _eval companions are byte copies of baseline_*_train_eval.yaml (closed-loop
+    LIBERO sim, no teacher targets) with only job_name/monitored_job_name changed -> success-rate
+    curves directly comparable to baseline_{500m,1b}_train.
+  * kd/inspect_teacher_on_demos.py -- sidecar sanity-check utility.
+
+On branch teacher-on-demos. NOT committed yet.
+
+Verified:
+  * Off-GPU (synthetic + real-data shapes): read path serves teacher targets; current-obs video
+    frames bit-identical to the baseline path; teacher_on_demos_dir="" a byte no-op; missing
+    sidecar raises; build enumeration covers every (episode,step) exactly once with num_workers>0;
+    submit_sweep composes all 53 runs, and the teacher_on_demos_500m torchrun command diffs from
+    baseline_500m_train's only in job.name / master_port / loss_csv path / the added
+    teacher_on_demos_dir override.
+  * On GPU -- 772502 (build_teacher_on_demos_smoketest, max_episodes=2, ketchup): ran end to end
+    on real libero_object_regen + the real 2B teacher (292 timesteps, 2 episodes), COMPLETED.
+    inspect_teacher_on_demos.py on the output:
+      - action_chunks (T,16,7) in ~[-1,1]; future_proprio (T,9); value (T,) in [-1,1] and RISING
+        from ~-0.25 early to ~1.0 at episode end -- the *2-1 remap direction is correct (an
+        inverted sign would silently train on reversed returns).
+      - future_image / future_wrist decode to 224x224x3 uint8 (matches the resolution design).
+      - both predicted frames: UPRIGHT, natural RGB, plausible LIBERO scenes -- no vertical flip,
+        no BGR swap needed. (regenerate_libero_dataset's np.flipud is input-side only; confirmed
+        it does not need mirroring on the model's decoded output.)
+
+What I did today:
+  * Submitted 772611 -- build_teacher_on_demos task_names=[ketchup], the REAL (uncapped) ketchup
+    sidecar. The 772502 smoketest one is complete=False (2 of 42 episodes) and can't back a
+    training run. ~20-30 min; writes .../libero_object_regen__teacher_on_demos/pick_up_the_
+    ketchup_..._demo.teacher_on_demos.hdf5.
+
+What's left:
+  1. When 772611 finishes: 1-iter teacher_on_demos_500m_train smoke against it
+     (max_iter=1, job_name=cosmos_teacher_on_demos_500m_smoke, task_names=[ketchup]). This is the
+     last untested integration point -- sidecar staging to $SLURM_TMPDIR, the hydra override
+     reaching LIBERODataset, DCP init load, one forward/backward with teacher targets, finite loss.
+  2. Commit the teacher-on-demos branch.
+  3. Full experiment: build_teacher_on_demos per task for all 10 libero_object tasks (per-task
+     jobs, ~2-5h each, resumable), then launch.only=[teacher_on_demos_500m_train,
+     teacher_on_demos_500m_train_eval] and the 1b pair. Head-to-head success-rate vs
+     baseline_{500m,1b}_train is the result.
+
+Cleanup anytime: rm -rf $COSMOS_POLICY_STORAGE/LIBERO-Cosmos-Policy/success_only/libero_object_regen__teacher_on_demos_smoketest
+
+
+--- 2026-09-03 -- ketchup teacher_on_demos sidecar: 772611 cancelled (47h), resubmitted as 772798 (3h) ---
+
+772611 (the first real build_teacher_on_demos task_names=[ketchup] submission) went out with the
+old build_teacher_on_demos.yaml time_limit of 47:00:00 -- meant as an un-sharded all-10-tasks
+fallback, way too long for a single task and it sat PENDING (Reason=Priority) without ever
+starting.
+
+Measured the real cost from the 772502 smoketest: 00:07:29 total for teacher load + 292 timesteps
+(2 ketchup episodes) + sidecar write. ketchup has 42 successful episodes of 50
+(libero_object_metainfo.json) ~= 6.1k timesteps ~= 21x the smoketest -> ~50-75 min wall
+(teacher load ~5 min fixed, generation the rest; batch_size 24 vs the smoketest's 8 helps).
+
+Changed build_teacher_on_demos.yaml default time_limit 47:00:00 -> 3:00:00 (~3x margin). It needs
+a margin, not a tight bound: a task is ONE source HDF5, and build_teacher_on_demos_dataset.py
+writes a file's sidecar only after ALL its episodes finish (_write_sidecar requires every group
+filled), so a mid-task timeout writes nothing and the task restarts from zero. (Per-episode
+incremental flush would remove that all-or-nothing risk and make any walltime safe -- noted as a
+possible follow-up, not done.) For an un-sharded all-10-tasks run, override time_limit to ~12h.
+
+scancel 772611; resubmitted:
+  772798  cosmos_distill_experiments_build_teacher_on_demos  (task_names=[ketchup], time_limit 3h)
+Writes .../libero_object_regen__teacher_on_demos/pick_up_the_ketchup_..._demo.teacher_on_demos.hdf5
+(the smoketest's ..._teacher_on_demos_smoketest/ copy is complete=False, 2 of 42 episodes -- can't
+back training). When 772798 finishes -> the 1-iter teacher_on_demos_500m_train smoke against it.
+
+
+--- 2026-09-03 -- teacher_on_demos: NEXT STEPS (as of 772798 PENDING) ---
+
+STATE: branch teacher-on-demos, NOT committed. Code + configs done and verified off-GPU. The
+build_teacher_on_demos_smoketest (772502) ran end to end on real ketchup data + the real teacher
+and its output passed inspect_teacher_on_demos.py (shapes, value sign, 224x224 decode, upright
+natural-colour frames). Real ketchup sidecar building now (772798).
+
+1. WAIT on 772798 -> the real ketchup sidecar
+   .../libero_object_regen__teacher_on_demos/pick_up_the_ketchup_..._demo.teacher_on_demos.hdf5
+   ~50-75 min once it starts. Resumable (skip if complete=True).
+
+2. 1-ITER TRAINING SMOKE (the last untested integration point: sidecar staging to $SLURM_TMPDIR,
+   the hydra override reaching LIBERODataset.teacher_on_demos_dir, DCP init load, one fwd/bwd with
+   teacher targets, finite loss):
+     python -m ...submit_sweep launch.only=[teacher_on_demos_500m_train] launch.submit=true \
+       runs.teacher_on_demos_500m_train.max_iter=1 \
+       runs.teacher_on_demos_500m_train.job_name=cosmos_teacher_on_demos_500m_smoke \
+       'runs.teacher_on_demos_500m_train.task_names=[ketchup]' \
+       runs.teacher_on_demos_500m_train.time_limit=0:30:00
+   Check the .out: "Staged teacher_on_demos sidecar to $SLURM_TMPDIR/...", an init-loaded line
+   (not "Training from scratch"), one training step, finite loss. Then wipe that smoke job dir.
+
+3. COMMIT the teacher-on-demos branch (5 modified: libero_dataset.py, conf/config.yaml,
+   kd/params.py, sweep.py, submit_sweep.py; new: kd/build_teacher_on_demos_dataset.py,
+   kd/inspect_teacher_on_demos.py, kd/TEACHER_ON_DEMOS_PLAN.md,
+   conf/runs/datasets/build_teacher_on_demos{,_smoketest}.yaml,
+   conf/runs/teacher_on_demos_{500m,1b}_train{,_eval}.yaml).
+
+4. FULL DATASET: build the other 9 libero_object task sidecars -- one job each (~1h, resumable):
+     for t in alphabet_soup bbq_sauce butter chocolate_pudding cream_cheese milk \
+              orange_juice salad_dressing tomato_sauce; do
+       python -m ...submit_sweep launch.only=[build_teacher_on_demos] launch.submit=true \
+         "runs.build_teacher_on_demos.task_names=[$t]"
+     done
+   (task filenames: ls .../libero_object_regen/*_demo.hdf5). Run a few in parallel.
+
+5. REAL RUNS: once all 10 sidecars exist (no task_names -> LIBERODataset walks every ketchup..
+   episode and needs a sidecar row for each; a partial set requires a matching task_names on the
+   training run):
+     python -m ...submit_sweep launch.only=[teacher_on_demos_500m_train,teacher_on_demos_500m_train_eval] launch.submit=true
+     python -m ...submit_sweep launch.only=[teacher_on_demos_1b_train,teacher_on_demos_1b_train_eval] launch.submit=true
+   The _eval companions poll checkpoints/iter_* and write eval_results.csv (closed-loop LIBERO
+   sim, no teacher targets). Head-to-head success-rate vs baseline_500m_train (765180, COMPLETED)
+   / baseline_1b_train is the result.
+
+OPTIONAL (only if per-task builds keep getting preempted / need tighter walltime): change
+build_teacher_on_demos_dataset.py to flush each episode's HDF5 group as it completes instead of
+the whole file at the end -> any timeout becomes resumable mid-task. ~30 lines.
+
+CLEANUP anytime: rm -rf .../libero_object_regen__teacher_on_demos_smoketest ; rm the
+cosmos_teacher_on_demos_500m_smoke job dir after step 2.
+
+
+--- 2026-09-03 ~01:02 -- 772798 FAILED: CUDA OOM at batch_size 24; dropped to 8 ---
+
+772798 loaded the teacher fine, printed "Building teacher_on_demos targets for 1 source file(s),
+42 episode(s), 6341 timesteps", then torch.OutOfMemoryError in the very first batch --
+tokenizer.encode (WAN2.1 VAE) inside generate_teacher_native_targets -> get_data_and_condition,
+tried to allocate 7.89 GiB, 44.39 GiB L40S with only 7.48 GiB free (2B teacher + VAE + batch-24
+activations = 36.9 GiB in use). Nothing written (all-or-nothing per file).
+
+Cause: build_teacher_on_demos.yaml had batch_size: 24 -- my guess ("L40S 48 GB fits ~24"), wrong.
+The max_episodes=2 smoketest (772502) that passed used batch_size 8, and
+build_teacher_native_distill_dataset.py -- same teacher, same generate call, same nodes -- also
+uses 8. Fixed: build_teacher_on_demos.yaml batch_size 24 -> 8, BuildTeacherOnDemosParams default
+16 -> 8, both with a "do not raise without testing" comment. At batch 8, 6341 timesteps ~= 790
+batches; the smoketest did ~37 batches in ~3 min of generation -> ~1h, inside the 3h limit.
+
+Resubmit: submit_sweep launch.only=[build_teacher_on_demos] launch.submit=true
+  'runs.build_teacher_on_demos.task_names=[ketchup]'   (picks up batch_size 8 from the yaml now)
+
+Resubmitted as:
+  773176  cosmos_distill_experiments_build_teacher_on_demos  (task_names=[ketchup], 3h, batch 8)
+Verified the generated params.yaml has batch_size: 8.
+
+773176 ran clean (no OOM at batch 8) but the OLD code never prints incremental progress -- the
+whole run's ~40 "  N/6341 timesteps" lines don't fill stdout's 4KB block buffer, so nothing shows
+until exit (same reason the 772502 smoketest dumped everything at once at the end). Added
+flush=True to the progress prints; scancel 773176; 773193 (with the fix). Then user asked for
+incremental data writes too, scancel 773193.
+
+--- 2026-09-03 ~10:20 -- build_teacher_on_demos_dataset.py: PER-EPISODE incremental writes ---
+
+Was: all-or-nothing per source file -- _write_sidecar built the whole <task>_demo.teacher_on_
+demos.hdf5 in one torch.save-style write only after every episode of that file was in RAM. For a
+single-file task like ketchup that meant one write ~1h in; a preemption/timeout at minute 55 lost
+everything (file-level resume is useless when a task IS one file).
+
+Now: each episode's HDF5 group is appended to the sidecar the moment its every timestep is
+generated (h5py "a" mode, group attr episode_complete=True + f.flush() done LAST), then its RAM
+buffer is freed. A rerun opens the partial sidecar, _completed_episodes() reads back the
+episode_complete groups, and only the missing episodes are regenerated (--force deletes the
+sidecar first). A crash mid-group leaves that group without episode_complete -> redone (the
+per-episode write is idempotent, `if dk in f: del f[dk]`). When all of a file's episodes are
+present, _finalize_sidecar() sets root complete=True (=False if max_episodes truncated the file;
+per-episode resume still keeps what it built). Also: teacher is no longer loaded at all if a
+resume finds nothing left to generate.
+
+Tested off-GPU (copied the 3 helpers, that module can't import without CUDA): write 2/5 episodes
+-> "crash" -> resume regenerates only 3/4/5 -> finalize; partial-group (no episode_complete)
+rewrite is idempotent; LIBERODataset serves all 176 timesteps from the incrementally-built
+sidecar. Also memory: only in-flight episode buffers held now (~1-2), not all 42.
+
+Relaunched: 773232  (task_names=[ketchup], 3h, batch 8, incremental writes + flushed progress)
+
+773232 COMPLETED in 02:20:33 (a bit slower than the ~1h guess -- the per-__getitem__ full-episode
+256px image re-read is the real bottleneck, num_workers=8 doesn't fully hide it). Wrote all 42
+ketchup episode groups incrementally, then finalized complete=True. Sidecar:
+.../libero_object_regen__teacher_on_demos/pick_up_the_ketchup_..._demo.teacher_on_demos.hdf5
+(217 MB). inspect_teacher_on_demos.py: all 42 groups pass -- action_chunks (T,16,7) in ~[-1,1],
+future_proprio (T,9), value (T,) low early (~-0.35) rising to 1.0 at episode end (correct sign),
+future_image/wrist decode to 224x224x3 uint8.
+
+Then: build the other 9 task sidecars (submit_sweep build_teacher_on_demos task_names=[<t>], ~2.5h
+each now, resumable per-episode; run several in parallel), commit the branch, launch the real runs.
+
+--- 2026-09-03 -- teacher_on_demos: first real run, ketchup-only, head-to-head vs the existing 1-task baseline ---
+
+There is already a ketchup-only 500M baseline on disk: cosmos_kd_baseline_500m_train_1task_ketchup
+(+ _eval), trained ~2026-09-01. max_iter=3000 (checkpoints stop at iter_000003000), ketchup only,
+teacher-derived init, original joint objective. Its eval companion (cosmos_kd_baseline_500m_train_
+1task_ketchup_eval) logged success_rate 1.0 (5 trials/task) from iter ~2600 to 3000 -- i.e. plain
+BC on ketchup demos saturates at 100% ketchup success by ~iter 2600. So this 1-task comparison
+mostly answers "do teacher targets still reach 100%?" (a sanity check); the discriminating
+comparison is the full 10-task suite where baseline_500m_train (765180) is not saturated.
+
+Submitted the matched teacher_on_demos run (skipped the separate 1-iter smoke -- this real run's
+first iters + its own .out serve the same integration check: staging, the teacher_on_demos_dir
+override, DCP init, teacher-target fwd/bwd):
+  773561  cosmos_teacher_on_demos_500m_train_1task_ketchup
+          = teacher_on_demos_500m_train  +  job_name/filename override
+                                         +  task_names=[ketchup]
+                                         +  max_iter=3000   (match the 1-task baseline)
+          everything else baseline: experiment cosmos_kd_student_500m_libero, batch 8,
+          checkpoint.load_path=kd_inits/student_init_500m_dcp, stage_data_to_tmpdir, num_workers 4,
+          47h walltime. Reads the ketchup teacher_on_demos sidecar (773232) via teacher_on_demos_dir.
+  773563  cosmos_distill_experiments_teacher_on_demos_500m_train_1task_ketchup_eval
+          = teacher_on_demos_500m_train_eval  +  job_name/filename override
+                                             +  monitored_job_name=cosmos_teacher_on_demos_500m_train_1task_ketchup
+                                             +  eval_task_keyword=ketchup   (sim-eval ketchup only)
+          closed-loop LIBERO sim, eval_checkpoint_format=dcp, no teacher targets.
+773561/773563 both had time_limit 47:00:00 inherited from the baseline yamls (right for a full
+30k-iter run; wildly oversized for max_iter=3000 ~= 2-4h, and a 47h GPU request backfills poorly
+-- 773561 stuck in Reason=Resources). scancel'd both; 773561 had briefly run (wrote config.yaml/
+train_loss.csv/DeviceMonitor startup files, NO checkpoint) so its run dir is non-empty but has
+nothing to resume from.
+
+Resubmitted with time_limit 7:59:00 on both:
+  773572  cosmos_teacher_on_demos_500m_train_1task_ketchup        (train, RUNNING)
+  773573  cosmos_distill_experiments_teacher_on_demos_500m_train_1task_ketchup_eval  (eval, RUNNING)
+mem stays 40G -- baseline_500m_train (765180) completed at 40G with the same experiment/batch/
+workers/staging, and teacher_on_demos adds no teacher at train time, only a ~100 MB sidecar LRU.
+
+Result to compare: 773573's eval_results.csv (teacher targets) vs
+cosmos_kd_baseline_500m_train_1task_ketchup_eval/eval_results.csv (demo targets) -- both 500M,
+ketchup only, max_iter 3000, same DCP init. Baseline already = 1.0 by iter ~2600.
+
+--- 2026-09-03 ~10:15 -- 773572 in progress: loss matches baseline, closed-loop success = 0 ---
+
+773572 (teacher targets) EDM loss tracks cosmos_kd_baseline_500m_train_1task_ketchup band-for-band
+(0.20 vs ~0.22 at matched iters). But 773573's sim eval is 0/3 at every checkpoint 200..1800,
+while the demo baseline was intermittently 1.0 from iter 1300 and consistently passing from ~1800.
+So: latent-space denoising loss on the teacher targets is as low as the baseline's on demo
+targets, yet the policy doesn't grasp.
+
+Diagnosed by comparing the teacher action chunks (from the 773232 sidecar) against the demo's
+recorded action chunks for the SAME 6341 ketchup states (normalized to [-1,1] via the suite
+dataset_statistics.json):
+  * translation (x,y,z): well matched -- |abs| ratio ~1.0, corr 0.78-0.98
+  * gripper: identical -- 100% committed (|g|>0.5) in both, corr 0.97
+  * within-chunk step-to-step |delta|: IDENTICAL (0.0229 both) -- teacher chunk is NOT smoother/
+    smeared (that hypothesis was wrong)
+  * ROTATION is heavily damped:
+      yaw   : demo +0.25 +-0.13  ->  teacher -0.04 +-0.08   (|abs| 0.26 -> 0.055, ~5x attenuated,
+                                                             mean sign-flipped, corr still +0.81)
+      pitch : demo -0.08         ->  teacher +0.04           (halved, sign-flipped)
+      roll  : std 0.16 -> 0.07   (halved)
+  * RMSE(teacher - demo chunk) = 0.185 = 38% of the demo chunk RMS, concentrated in rotation.
+
+Interpretation: extract_action_chunk_from_latent_sequence AVERAGES ~112 reverse-tiled copies of a
+num_denoising_steps=1 (conditional-mean) teacher sample. Rotation is the low-energy part of the
+action; both the averaging and the 1-step mean estimate shrink it toward zero far more than the
+high-energy translation/gripper channels. The demo consistently applies +0.25 yaw to orient the
+gripper for the ketchup grasp; the teacher target says ~0, so the student learns to under-rotate
+-> reaches the bottle, closes the gripper, wrong grasp geometry -> 0% success. Loss is fine
+because the loss is over the whole 9-frame latent (dominated by image reconstruction) and a
+0.05-scale error on 3 of 7 action dims is a tiny fraction of it.
+
+Possible fixes if confirmed after the run finishes: raise num_denoising_steps for the build
+(a few real sampling steps -> sharper, less mean-reverted action); or take the teacher action
+from a dedicated action-only extraction rather than the tiled-average; or per-dim rescale the
+teacher action toward the demo action statistics; or accept that "teacher targets" here means
+"teacher's cautious mean policy" and only compare on multi-task where BC-on-demos also isn't
+saturated.
+
+================================================================================
+2026-09-03  teacher_on_demos ketchup -- rebuild sidecar at num_denoising_steps=5 (match eval)
+================================================================================
+
+Result of the first ketchup run (train 773572 COMPLETED @ iter 3000, loss 0.159 == demo
+baseline; eval 773573 TIMEOUT after scoring iter 200..2800, ALL 0/3 -> 0% closed-loop).
+Loss matched the demo baseline exactly, closed loop never completed a single episode.
+
+Root cause confirmed: the sidecar was generated with num_denoising_steps=1, but real LIBERO
+eval (run_libero_eval.py, which the kd_static_eval companion runs with no overrides) uses:
+    num_denoising_steps_action = 5
+    ar_future_prediction = False,  ar_value_prediction = False
+  -> generate_future_state_and_value_in_parallel = True
+  -> get_action() does ONE generate_samples_from_batch(num_steps=5) and reads action + future
+     proprio + value + future images out of that single 5-step latent.
+  (num_denoising_steps_future_state=1 / _value=1 in that config apply ONLY when ar_* is True --
+   the config comments say "otherwise equal to num_denoising_steps_action".)
+generate_teacher_native_targets already uses that exact one-joint-call structure
+(num_conditional_frames = min_num_conditional_frames, all four outputs from one generated_sample),
+so the ONLY mismatch was num_steps: 1 (build) vs 5 (eval). A 1-step sample is the teacher's
+conditional mean; the reverse-tile-average action extraction then means it again -> the yaw
+collapse in the action-error analysis above.
+
+Changes (branch teacher-on-demos):
+  * conf/runs/datasets/build_teacher_on_demos.yaml           num_denoising_steps 1 -> 5;
+                                                             time_limit 3:00:00 -> 7:59:00
+  * conf/runs/datasets/build_teacher_on_demos_smoketest.yaml num_denoising_steps 1 -> 5;
+                                                             time_limit 20 -> 30 min
+  * kd/params.py  BuildTeacherOnDemosParams.num_denoising_steps default 1 -> 5 (+ comments)
+
+Old 1-step data preserved (NOT overwritten):
+  .../success_only/libero_object_regen__teacher_on_demos__1denoisestep/
+      pick_up_the_ketchup_and_place_it_in_the_basket_demo.teacher_on_demos.hdf5   (217 MB)
+The build target .../libero_object_regen__teacher_on_demos/ was recreated empty for the 5-step
+rebuild, so teacher_on_demos_500m_train.yaml's teacher_on_demos_dir is unchanged.
+
+Submitted: job 783368  build_teacher_on_demos task_names=[ketchup]  (num_denoising_steps=5)
+  ~5x the per-timestep teacher denoise vs the 1-step build (~2.5h) -> budget ~6-8h.
+  Per-episode incremental writes (episode_complete=True) so a requeue only loses the in-flight
+  episode.
+Next: when 783368 done, relaunch teacher_on_demos_500m_train + _eval on ketchup (max_iter=3000,
+7:59:00) and compare the closed-loop curve to the demo baseline again.
+
+Old 1-step training results preserved (NOT overwritten) alongside the sidecar:
+  .../cosmos_v2_finetune/cosmos_teacher_on_demos_500m_train_1task_ketchup__1denoisestep/            (80 GB, train 773572: loss csv + 15 dcp checkpoints)
+  .../cosmos_v2_finetune/cosmos_distill_experiments_teacher_on_demos_500m_train_1task_ketchup_eval__1denoisestep/  (47 MB, eval 773573: eval_results.csv 0/3 @ iter 200..2800)
+The relaunch (after 783368 builds the 5-step sidecar) writes fresh dirs at the un-suffixed names.
+
+--------------------------------------------------------------------------------
+JOBS LAUNCHED  (2026-09-03, teacher_on_demos ketchup, num_denoising_steps=5)
+--------------------------------------------------------------------------------
+783368  cosmos_distill_experiments_build_teacher_on_demos
+        run_type=build_teacher_on_demos  task_names=[ketchup]
+        1x l40s, mem 80G, cpus 8, time 7:59:00, account aip-courvill
+        cmd: submit_sweep launch.only=[build_teacher_on_demos] launch.submit=true \
+             runs.build_teacher_on_demos.task_names=[ketchup]
+        out: .../success_only/libero_object_regen__teacher_on_demos/
+             pick_up_the_ketchup_and_place_it_in_the_basket_demo.teacher_on_demos.hdf5
+        params.yaml verified: num_denoising_steps=5, batch_size=8, dataloader_num_workers=8, seed=0
+        status: PENDING (submitted 18:14)
+
+NOT YET LAUNCHED (waiting on 783368 to finish the 5-step sidecar):
+  teacher_on_demos_500m_train       task_names=[ketchup]  max_iter=3000  time 7:59:00
+  teacher_on_demos_500m_train_eval  (companion, monitors cosmos_teacher_on_demos_500m_train)
+  -> will write fresh dirs at:
+     cosmos_teacher_on_demos_500m_train_1task_ketchup/
+     cosmos_distill_experiments_teacher_on_demos_500m_train_1task_ketchup_eval/
+
+Prior (1-step) jobs for reference, results archived under __1denoisestep:
+  773572  cosmos_teacher_on_demos_500m_train_1task_ketchup        COMPLETED @ iter 3000, loss 0.159
+  773573  ..._teacher_on_demos_500m_train_1task_ketchup_eval      TIMEOUT (scored iter 200..2800, all 0/3)
+
+--------------------------------------------------------------------------------
+2026-09-03  783368 COMPLETED (2:44:58) -- 5-step ketchup sidecar built, but targets ~unchanged
+--------------------------------------------------------------------------------
+Build finished clean: all 42 ketchup episodes / 6341 timesteps, root complete=True,
+num_denoising_steps=5, 216 MB at
+  .../success_only/libero_object_regen__teacher_on_demos/pick_up_..._demo.teacher_on_demos.hdf5
+(The trailing "OSError [Errno 16] Device or resource busy: .nfsXXXX" spam is Python
+multiprocessing DataLoader workers failing to rmtree their temp dirs on NFS at shutdown --
+fires AFTER "[done]"/"Done:", exit code 0:0, sidecar fully written. Benign.)
+
+NEGATIVE RESULT: 5-step vs 1-step targets are nearly identical.
+  per-dim RMS(5step - 1step) / 1step chunk RMS:  x .18  y .08  z .10  roll .17  pitch .34
+                                                 yaw .26  grip .08   (overall diff RMS 0.044,
+                                                 ~9% of the 0.49 chunk RMS)
+  Rotation is STILL collapsed: yaw mean ~-0.04, |yaw| ~0.055 in BOTH sidecars, vs the demo's
+  yaw mean +0.25 / |yaw| 0.26. pitch/roll likewise ~unchanged.
+So matching eval's denoising-step count does NOT restore the rotation the demo uses. The
+collapse is not a 1-step-sampling artifact -- the teacher's conditional-mean yaw at these
+states is genuinely ~0, and/or extract_action_chunk_from_latent_sequence's ~112-copy
+reverse-tile-AVERAGE washes it out (eval uses that same extraction).
+
+Implication: training on the 5-step sidecar will most likely reproduce the 0% closed-loop.
+Before spending another train+eval cycle, worth checking whether the TEACHER ITSELF scores
+>0 on closed-loop ketchup (run_libero_eval.py with the 2B teacher ckpt) -- that isolates
+"targets unusable" from "student pipeline broken". Relaunch of teacher_on_demos_500m_train
++ _eval on ketchup is NOT yet submitted pending that decision.
+
+--------------------------------------------------------------------------------
+2026-09-03  785855  extraction diagnostic -- the tiled-AVERAGE is NOT the cause
+--------------------------------------------------------------------------------
+kd/diagnose_action_extraction.py on 48 ketchup states (num_denoising_steps=5): pulled the raw
+(16,28,28) action latent frame out of generated_sample, reshaped to the 112 reverse-tiled
+(16,7) copies WITHOUT averaging, compared mean-over-copies vs copy[0] vs median vs the demo
+action. Pooled over 768 chunk steps, normalized [-1,1]:
+
+  dim               x        y        z     roll    pitch      yaw     grip
+  demo |.|      0.167    0.401    0.336    0.116    0.148    0.257    1.000
+  gen  |.|      0.176    0.357    0.348    0.141    0.086    0.056    1.000
+  copy0|.|      0.175    0.357    0.348    0.141    0.087    0.059    1.000   <- == gen
+  median|.|     0.176    0.357    0.348    0.141    0.086    0.056    1.000   <- == gen
+  copy-std      0.014    0.013    0.014    0.012    0.011    0.013    0.015   <- UNIFORM across dims
+  corr demo,gen  0.80     0.98     0.96     0.75     0.80     0.80     0.98
+  corr demo,cp0  0.80     0.98     0.96     0.75     0.80     0.79     0.98   <- == gen
+
+Conclusions:
+  * H1 (reverse-tile-AVERAGE collapses rotation) -- REJECTED. copy[0] (no averaging) is
+    identical to the mean on every metric; cross-copy spread is a uniform ~0.013 on ALL 7 dims
+    (just residual sampling noise, same absolute size everywhere -- the teacher writes the same
+    112-vector 112x). extract_action_chunk_from_latent_sequence is harmless.
+  * H2 (teacher genuinely generates attenuated rotation) -- CONFIRMED. The teacher's own
+    generated action at these states has:
+      - translation x/y/z, gripper: faithful (|.| ratio ~1.0, corr 0.96-0.98)
+      - yaw: |.| 0.056 vs demo 0.257  -> ~4.6x attenuated, mean sign-flipped (+0.24 -> -0.04),
+        BUT still directionally correlated with the demo (corr +0.80)
+      - pitch: halved + sign-flipped;  roll: ~same corr, slightly amplified
+    So the teacher's rotation output tracks the demo's DIRECTION but is heavily scaled down --
+    looks like L2 regression-to-the-mean on a low-variance dim, not multimodal cancellation
+    (which would kill the correlation) and not an extraction artifact.
+
+This is a genuine property of the frozen 2B teacher's single-query generation. Training on it
+faithfully teaches the student attenuated yaw -> wrong grasp geometry -> 0% ketchup.
+
+Open question, decisive: does the 2B teacher's OWN closed-loop eval complete ketchup with this
+action profile? (run_libero_eval.py, teacher ckpt.) If yes -> the attenuation is compensated
+somewhere in the real closed loop our single-query sidecar doesn't capture. If no -> "teacher
+on demos" can't beat BC on a task the teacher itself can't do single-shot.
+Alternative probe: per-dim rescale the sidecar's rotation toward demo stats, retrain, see if
+success recovers -- directly tests "attenuated rotation is the killer".
+
+npz: /home/esraa1/tod_action_diag/action_extraction_diag.npz
+(Trailing OSError .nfsXXXX in the job log = multiprocessing NFS teardown, post-run, exit 0.)
+
+--------------------------------------------------------------------------------
+2026-09-03  FINDING: dataset_statistics.json mismatch (local vs teacher) -- rotation only
+--------------------------------------------------------------------------------
+While setting up the teacher self-eval I compared the two action-normalization stats files:
+
+  libero_object_regen/dataset_statistics.json           (LOCAL -- what our LIBERODataset uses
+                                                          for demo actions AND what run_libero_eval
+                                                          unnormalizes student output with)
+  nvidia/Cosmos-Policy-LIBERO-Predict2-2B/
+      libero_dataset_statistics.json                     (TEACHER -- what the frozen 2B teacher
+                                                          was trained + is evaluated with)
+
+                x       y       z      roll    pitch    yaw     grip
+  actions_min diff  +0.054  0.000   0.000  +0.108   +0.085  +0.035  0.000
+  actions_max diff  0.000  -0.046   0.000  -0.179   -0.025  -0.194  0.000
+  actions_std local 0.269   0.439   0.447   0.024    0.049   0.042   0.998
+  actions_std teach 0.336   0.379   0.444   0.040    0.063   0.078   0.998
+
+Translation (x,y,z) ranges and gripper are ~identical between the two files; ROTATION differs
+a lot -- teacher's yaw range is 0.739 wide vs local 0.510 (1.45x), roll 0.614 vs 0.327.
+
+Consequence for teacher_on_demos: the teacher GENERATES its action in the latent in ITS OWN
+normalized space (the action latent frame was filled during teacher training via
+replace_latent_with_action_chunk(teacher-normalized actions)). extract_action_chunk_from_latent_sequence
+returns that verbatim, so the sidecar's `action_chunks` are TEACHER-normalized. But:
+  - the student trains to reproduce them, then
+  - run_libero_eval unnormalizes the student's output with the LOCAL stats
+    (eval_dataset_stats_path = libero_object_regen/dataset_statistics.json).
+=> systematic normalization mismatch, CONCENTRATED IN ROTATION (the only dims where the two
+   files disagree). Exactly matches the symptom: translation+gripper fine, rotation broken, 0%.
+The TEACHER_ON_DEMOS_PLAN.md assumption "teacher->raw->normalized is a lossy no-op" is WRONG --
+it's only a no-op if the two stats files are equal, and they are not.
+
+Caveat: a pure linear renormalization would preserve corr(demo,teacher); we measured yaw corr
+0.80 (not ~1.0), so the mismatch explains the MAGNITUDE/scale error but there is ALSO a real
+precision drop in the teacher's rotation. Both plausibly contribute to 0%.
+
+Likely fix (option 2 from the prior entry, refined): in the build, convert the teacher's
+generated action TEACHER-normalized -> raw (teacher stats) -> LOCAL-normalized (local stats)
+before storing, so the sidecar matches the local convention the student trains+evals in.
+Same for future_proprio (proprio stats also differ) and check value.
+
+--------------------------------------------------------------------------------
+JOBS LAUNCHED (cont.)
+--------------------------------------------------------------------------------
+785855  tod_diag_action_extraction        COMPLETED (2:12) -- extraction NOT the cause (above)
+785914  tod_teacher_self_eval_ketchup     SUBMITTED -- run_libero_eval.py, frozen 2B teacher,
+        --config cosmos_predict2_2b_480p_libero__inference_only
+        --ckpt_path nvidia/Cosmos-Policy-LIBERO-Predict2-2B
+        --dataset_stats_path / --t5_text_embeddings_path = the teacher's OWN HF files
+        --task_suite_name libero_object --task_ids 4 (ketchup) --num_trials_per_task 20
+        --num_denoising_steps_action 5 --ar_future_prediction/value False  (== student eval)
+        --seed 195 --deterministic True --flip_images True --use_jpeg_compression True
+        1x l40s, 2:30:00.  sbatch: scratchpad/teacher_self_eval_ketchup.sbatch
+        Question: does the teacher's OWN closed loop complete ketchup? (isolates "targets
+        unusable" from "student pipeline / normalization bug".)
+
+--------------------------------------------------------------------------------
+2026-09-03  785914 RESULT: teacher self-eval on ketchup = 20/20 = 100%
+--------------------------------------------------------------------------------
+Frozen 2B teacher, its own inference config + its own dataset_statistics.json + t5 embeddings,
+num_denoising_steps_action=5 / ar_* False (same denoising as our student eval), task 4
+(pick_up_the_ketchup), 20 trials, seed 195, deterministic:  20 successes / 20 = 100.0%.
+(EGLError tracebacks in the log were non-fatal render retries; job COMPLETED, all 20 MP4s
+saved with success=True.)
+
+=> The teacher's single-query targets ARE usable for ketchup. The 0% student result is a
+   PIPELINE bug, not a "teacher can't do the task" problem. The dataset_statistics.json
+   mismatch (prev entry) is the prime suspect and now clearly worth fixing:
+
+   FIX (to implement):
+     In the build (generate_teacher_native_targets consumer, or a post-step in
+     build_teacher_on_demos_dataset.py): the teacher's extracted action + future_proprio come
+     out TEACHER-normalized. Convert each:
+        teacher-normalized --(teacher stats: 0.5*(x+1)*(max_T-min_T)+min_T)--> raw
+        raw --(local stats: 2*(x-min_L)/(max_L-min_L)-1)--> LOCAL-normalized
+     Store the LOCAL-normalized values, so the sidecar matches the convention the student
+     trains in and run_libero_eval unnormalizes with. Need the teacher's
+     libero_dataset_statistics.json (HF: nvidia/Cosmos-Policy-LIBERO-Predict2-2B) at build time.
+     value: teacher emits [0,1] -> we already store 2*v-1; value has no min/max-range issue
+     (it's a return, same [-1,1] target space), leave as is but sanity-check.
+   Then: rebuild ketchup sidecar (3rd build), relaunch teacher_on_demos_500m_train + _eval.
+
+logs: /home/esraa1/tod_teacher_self_eval/logs/  (results csv + 20 rollout MP4s)
+
+--------------------------------------------------------------------------------
+2026-09-03  FIX implemented: renormalize teacher output teacher-stats -> local-stats
+--------------------------------------------------------------------------------
+kd/build_teacher_on_demos_dataset.py:
+  * new _renorm_to_local(x_src_norm, key, src_stats, dst_stats): x_src -> raw (src min/max)
+    -> x_dst (dst min/max). Exact identity when stats agree.
+  * build() loads teacher_stats = load_dataset_stats("<teacher_checkpoint>/libero_dataset_statistics.json")
+    (HF cache hit -- the teacher snapshot is already downloaded) and
+    local_stats  = load_dataset_stats("<data_dir>/dataset_statistics.json"), prints whether they differ.
+  * in the generation loop: native_action  = _renorm_to_local(., "actions", teacher, local)
+                             future_proprio = _renorm_to_local(., "proprio", teacher, local)
+    applied BEFORE the buffer write. value untouched (MC return, not min/max-rescaled).
+  * sidecar root attrs now record: norm_convention="local_suite",
+    teacher_dataset_statistics, renorm_teacher_to_local="actions,future_proprio".
+  * module docstring updated (the old "normalization matches the baselines" line was the wrong
+    assumption -- it held for the demo actions fed IN, not the teacher's generated output).
+
+Sanity-check of the renorm with the real stats files (yaw, the worst dim):
+  teacher-norm yaw ~0.0 (the teacher's ~zero-mean output)  -> local-norm ~ +0.26
+  demo local-norm yaw mean was +0.244
+  => the renorm maps the teacher's collapsed-looking yaw right onto the demo's distribution.
+  grip: exact identity;  x: near-identity (stats agree there).  Strongly suggests the stats
+  mismatch was the dominant cause of the 0%.
+
+Data lineage (all preserved):
+  libero_object_regen__teacher_on_demos__1denoisestep/       1-step, teacher-norm  (job 773232-era)
+  libero_object_regen__teacher_on_demos__5step_teachernorm/  5-step, teacher-norm  (job 783368)
+  libero_object_regen__teacher_on_demos/                     5-step, LOCAL-norm    (job 786288, THIS)
+
+786288  cosmos_distill_experiments_build_teacher_on_demos  SUBMITTED
+        build_teacher_on_demos task_names=[ketchup], num_denoising_steps=5, + teacher->local renorm.
+Next: when 786288 done, relaunch teacher_on_demos_500m_train + _eval on ketchup.
+
+--------------------------------------------------------------------------------
+2026-09-04  786288 COMPLETED (6:44:44) + verification + relaunch
+--------------------------------------------------------------------------------
+3rd ketchup sidecar built: 42 episodes, complete=True, num_denoising_steps=5, norm_convention=
+local_suite, renorm_teacher_to_local="actions,future_proprio". 216 MB at
+  .../success_only/libero_object_regen__teacher_on_demos/
+
+Verification -- action stats (normalized), pooled over all 42 ketchup episodes:
+  dim          x      y      z     roll   pitch   yaw    grip
+  OLD |.|    0.189  0.361  0.332  0.140  0.080  0.056  1.000   (teacher-norm, job 783368)
+  NEW |.|    0.186  0.378  0.332  0.110  0.106  0.262  1.000   (local-norm, job 786288)
+  DEMO |.|   0.167  0.401  0.336  0.116  0.148  0.257  1.000   (local-norm reference)
+
+  yaw mean:  OLD -0.038  ->  NEW +0.255  (demo +0.244)   <-- collapse GONE, lands on demo dist
+  pitch:     OLD +0.045  ->  NEW -0.041  (demo -0.071)   <-- sign fixed
+  roll:      OLD -0.134  ->  NEW -0.036  (demo -0.076)
+  translation / gripper: ~unchanged (stats agree there)
+  value: untouched, [-0.58,1.00] mean 0.21 (correct).
+  future_proprio mean|.| 0.42 -> 1.06 (also renormed; some dims land slightly outside [-1,1]
+  where teacher proprio range < local -- acceptable, loss doesn't clamp; watch if it matters).
+
+=> The renorm brings the teacher's rotation targets onto the demo distribution. Strong signal
+   the stats mismatch was the dominant cause of the 0%.
+
+RELAUNCHED (renormalized sidecar, num_denoising_steps=5):
+  789317  cosmos_teacher_on_demos_500m_train_1task_ketchup
+          teacher_on_demos_500m_train + job_name/filename override, task_names=[ketchup],
+          max_iter=3000, time 7:59:00, mem 40G, batch 8, DCP init student_init_500m_dcp.
+          Writes fresh to cosmos_teacher_on_demos_500m_train_1task_ketchup/ (old -> __1denoisestep).
+  789318  cosmos_distill_experiments_teacher_on_demos_500m_train_1task_ketchup_eval
+          teacher_on_demos_500m_train_eval + overrides, monitored_job_name=...1task_ketchup,
+          eval_task_keyword=ketchup, checkpoint_format=dcp, num_trials_per_task=3, 7:59:00.
+          dataset_stats_path = LOCAL libero_object_regen/dataset_statistics.json (correct now).
+  (submit warned both dirs non-empty -- just empty slurm/ from dry-runs, no checkpoints, clean start.)
+
+Compare when done: 789318 eval_results.csv vs cosmos_kd_baseline_500m_train_1task_ketchup_eval
+(demo targets, saturates ~1.0 by iter 2600) and vs the 0/3 of the pre-fix run (773573).
+Data lineage: __1denoisestep (1-step, teacher-norm), __5step_teachernorm (5-step, teacher-norm),
+current (5-step, local-norm).
+
+--------------------------------------------------------------------------------
+2026-09-04  action-dist verification + new artifact
+--------------------------------------------------------------------------------
+kd/analyze_teacher_on_demos_actions.py (new, pure h5py+numpy, CPU job 789348): per-dim
+teacher-vs-demo action comparison over all 6341 ketchup steps, demo actions read raw from the
+demo hdf5 and local-normalized inline (no torch / LIBERODataset). Ran on both the new
+(local-norm) and old (5-step teacher-norm) sidecars.
+
+  |teacher|/|demo|   OLD(teacher-norm)  ->  NEW(local-norm)      demo->teacher corr (unchanged)
+    x                  1.14                   1.13                 0.76
+    y                  0.89                   0.93                 0.98
+    z                  1.02                   1.02                 0.95
+    roll               1.07                   0.85                 0.68
+    pitch              0.56                   0.75                 0.77
+    yaw                0.20                   1.01                 0.80   <-- fixed
+    grip               1.00                   1.00                 0.97
+  chunk RMSE vs demo   0.193                  0.148
+  yaw chunk RMSE       0.302                  0.081
+
+The renorm fixes the magnitude/scale error (yaw 0.20x -> 1.01x, matches the demo). The
+rotation correlations (0.68-0.80) are unchanged -- that residual is the teacher's own
+imprecision on low-variance axes, not a renorm-fixable thing.
+
+Artifact: "Renormalized Teacher Targets"
+  https://claude.ai/code/artifact/39769287-f427-4193-95e7-80756ea46f1f
+  before/after rotation-magnitude bars + executed-action histograms (demo vs teacher, now
+  overlapping) + per-dim stats table with rmse delta vs the pre-fix sidecar.
+  (The pre-fix artifact "Teacher Action Error by Dimension"
+   https://claude.ai/code/artifact/22368196-0d28-4708-afdc-cb11c6a74d1c stays as the record of
+   the collapsed state.)
+JSON: /home/esraa1/tod_actdist_renorm.json , /home/esraa1/tod_actdist_5step_teachernorm.json
+
+New metrics artifact for the renormalized run (job 789317/789318), separate from the pre-fix
+"Teacher Targets on Ketchup" artifact:
+  "Renormalized Targets on Ketchup"  https://claude.ai/code/artifact/39bdcf7e-34ff-435d-acd2-9cf22cf34ab2
+  loss + success-rate curves, demo baseline vs renormalized teacher targets.
+  Snapshot: iter 2184, loss 0.209; eval scored 200..2000, all 0/3 so far (demo baseline first
+  passed at iter 1300, consistently by 1800 -- this run is past that point with no success yet).
+
+--------------------------------------------------------------------------------
+2026-09-04  BUG FOUND + FIXED: future_proprio renorm corrupted the target (regression)
+--------------------------------------------------------------------------------
+While double-checking eval normalization for the running 789317/789318 (still 0/3 through iter
+2200, later than the demo baseline's own convergence at iter 1300-1800), re-examined the sidecar
+future_proprio distribution -- the SAME teacher->local renorm applied to future_proprio as to
+action turns out to badly corrupt it:
+
+  future_proprio, post-renorm, all 9 dims pooled:
+    dim4: min +0.99  max +5.89  mean +3.48   |.|>1 in 100% of states
+    dim2: min -2.27  max +0.77  mean -1.22   |.|>1 in 64%
+    dim6: min -0.34  max +1.99  mean +1.09   |.|>1 in 69%
+    dim8: min -3.50  max +4.20  mean +0.93   |.|>1 in 49%
+    overall: 32% of ALL future_proprio values exceed |1|, max magnitude 5.9
+  (pre-renorm/teacher-norm: mean|.|=0.42, contained)
+
+Root cause: action deltas are directly comparable across LIBERO suites (same control convention,
+NVIDIA's 4-suite-pooled stats just widen the observed range) -- the raw round-trip is meaningful.
+Proprio is an ABSOLUTE end-effector/joint position; different suites' tasks occupy different
+regions of that space, so NVIDIA's pooled proprio range spans several disjoint workspaces:
+  proprio_max dim4:  local 0.385  vs teacher 1.366  (3.6x wider)
+  proprio_min dim2:  local -0.177 vs teacher -0.486
+  proprio_max dim8:  local 0.103  vs teacher 0.636
+Round-tripping future_proprio through raw units and re-normalizing with only libero_object's much
+narrower slice of that pooled range throws it far outside [-1,1] on several dims. This is a
+regression the "same fix as action" introduced, not a pre-existing problem -- and since
+future_proprio is a training target in the SAME joint transformer as the action (not the executed
+quantity, no reason it needed to match the local convention), squared-error terms of ~35 on that
+frame (vs the normal ~0.1) plausibly explain why 789317 stayed at 0% past the point the baseline
+converged.
+
+FIX: kd/build_teacher_on_demos_dataset.py -- removed the future_proprio renorm call. action_chunks
+still get teacher->local (that part is correct and verified, see the action-error artifact).
+future_proprio now stored verbatim in the teacher's own normalization (as it always was pre-fix).
+Root attrs: norm_convention="local_suite_actions__teacher_norm_future_proprio",
+renorm_teacher_to_local="actions" (was "actions,future_proprio").
+
+Actions taken:
+  - scancel 789317, 789318 (training on the bad-proprio sidecar; not worth finishing)
+  - archived (not overwritten): libero_object_regen__teacher_on_demos__5step_actionfix_badproprio/
+      and the matching train/eval dirs __5step_actionfix_badproprio
+  - fresh empty libero_object_regen__teacher_on_demos/ target dir
+  - submitted 789704: build_teacher_on_demos task_names=[ketchup], num_denoising_steps=5,
+    action-only renorm. params.yaml verified.
+Next: when 789704 done, re-verify future_proprio is back in a contained range (and re-check
+action stats are unchanged from the last good verification), then relaunch
+teacher_on_demos_500m_train + _eval.
+
+--------------------------------------------------------------------------------
+2026-09-04  BIGGER FIX: use the teacher's normalization THROUGHOUT (not per-field renorm)
+--------------------------------------------------------------------------------
+Rather than patch normalization field-by-field (action fixed, proprio reverted -- see prior
+entries), switched the whole teacher_on_demos build+train to the teacher's OWN
+dataset_statistics.json convention end to end. This also fixes a bug neither earlier attempt
+caught: the build's LIBERODataset was conditioning the teacher's generation on CURRENT proprio
+normalized with LOCAL stats, while the teacher expects its own convention -- an input-side scale
+bug, not just an output-side one.
+
+Code changes:
+  cosmos_policy/datasets/libero_dataset.py
+    - new kwarg `dataset_stats_override_path: str = ""` (LIBERODataset.__init__). When set, loads
+      dataset_stats from that JSON file instead of computing/loading `{data_dir}/
+      dataset_statistics.json` -- never writes back to data_dir; skips the post-norm diagnostic
+      stats cache too. "" (default) is a byte-identical no-op.
+  kd/build_teacher_on_demos_dataset.py
+    - removed `_renorm_to_local` entirely (both call sites and the function).
+    - build()'s own LIBERODataset now constructed with
+      dataset_stats_override_path=resolve_path(f"{teacher_checkpoint}/libero_dataset_statistics.json")
+      (resolve_path handles the HF-repo-id case; cache hit, load_teacher already fetched the
+      snapshot). action_chunks / future_proprio stored VERBATIM -- teacher output IS already in
+      the convention the sidecar is now built in.
+    - root attrs: norm_convention="teacher_checkpoint", dataset_stats_override_path=<path>
+      (replaces norm_convention="local_suite_actions__teacher_norm_future_proprio" /
+      renorm_teacher_to_local).
+    - module docstring rewritten: full NORMALIZATION section walking through both earlier mistakes
+      and why this version avoids per-field renormalization entirely.
+  sweep.py: new RunConfig field `dataset_stats_override_path: str = ""` (torchrun path only,
+      teacher_on_demos_{500m,1b}_train) -- passed as dataloader_train.dataset.dataset_stats_
+      override_path; only meaningful together with teacher_on_demos_dir.
+  submit_sweep.py: torchrun branch adds that override to the overrides dict when set (no staging
+      needed -- a few-KB JSON, fine to read directly even with stage_data_to_tmpdir on).
+  kd/params.py: unchanged (build resolves the teacher's stats path internally now, no new build
+      param needed).
+
+Consequence: this run's train_loss values are no longer numerically comparable to the demo
+baseline's (different latent scale) -- irrelevant, since the actual comparison is closed-loop
+success rate (simulator task completion), which is convention-agnostic.
+
+Cleanup:
+  - cancelled 789704 (the interim action-renorm-only/proprio-verbatim build, 55% done when
+    superseded) and removed its partial sidecar file from libero_object_regen__teacher_on_demos/
+    (26/42 episodes, complete=False, wrong convention for the new approach -- not worth archiving,
+    it was mid-generation).
+Data lineage (all preserved except the just-deleted partial):
+  __1denoisestep/                      1-step, teacher-norm both (no renorm)
+  __5step_teachernorm/                 5-step, teacher-norm both (no renorm)
+  __5step_actionfix_badproprio/        5-step, action->local renorm + BROKEN proprio->local renorm
+  libero_object_regen__teacher_on_demos/   5-step, teacher-norm THROUGHOUT (job 790396, current)
+
+790396  cosmos_distill_experiments_build_teacher_on_demos  SUBMITTED (task_names=[ketchup],
+        num_denoising_steps=5, dataset_stats_override_path=teacher's own file, no renorm).
+Dry-run verified for the follow-up train+eval launch (not yet submitted -- waiting on 790396):
+  runs.teacher_on_demos_500m_train.dataset_stats_override_path=<teacher stats local path>
+  runs.teacher_on_demos_500m_train_eval.eval_dataset_stats_path=<same path>
+  (same local HF-cache path: hf_cache/models--nvidia--Cosmos-Policy-LIBERO-Predict2-2B/
+   snapshots/cb689ec0e3347c13667d70a78a3447388f5c3bb8/libero_dataset_statistics.json)
+Next: when 790396 done, verify action/future_proprio stats look sane (contained, no blowup),
+then relaunch teacher_on_demos_500m_train + _eval with the overrides above.
+
+--------------------------------------------------------------------------------
+2026-09-04  790396 COMPLETED + verification + IMPORTANT re-analysis + relaunch
+--------------------------------------------------------------------------------
+Sidecar verification (teacher-norm throughout, no renorm):
+  future_proprio: |.|>1 in 0.08% of values (was 32%), max abs 1.004 (was 5.9), mean|.|=0.401.
+    FIXED -- contained, matches the pre-any-renorm baseline.
+  action yaw: mean -0.038, |.|=0.064 -- same tiny magnitude as every un-renormalized version.
+
+Re-analysis of the "rotation collapse": converted the DEMO's own commanded yaw (local-norm mean
++0.244) through raw units into the TEACHER's convention: raw = -0.3289 + (1.244/2)*0.510 =
+-0.0117; teacher-norm = 2*(-0.0117+0.3643)/0.7393 - 1 = -0.046. The teacher's ACTUALLY GENERATED
+yaw mean, -0.038, is almost exactly this (-0.046 vs -0.038) -- i.e. once compared in a consistent
+unit system, the teacher's raw/physical yaw command roughly MATCHES what the demo itself commands.
+The original "H2: teacher generates 5x-attenuated yaw" diagnosis (2026-09-03) compared teacher-norm
+teacher output directly against local-norm demo reference WITHOUT unit conversion -- an
+apples-to-oranges bug in that diagnostic script itself, not necessarily a real generation defect.
+(The demo<->teacher correlation, 0.68-0.80 for rotation, IS unaffected by this -- correlation is
+scale/shift-invariant, so that gap is genuine teacher imprecision, separate from the magnitude
+question.)
+
+Remaining real (separate) concern: EDM training adds noise in whatever NORMALIZED units the
+target lives in (sigma up to ~85, sigma_data=0.5). A channel whose useful signal spans only
++-0.06 (teacher-norm yaw) sits far below the noise floor across most of the sampling schedule --
+objectively harder for the STUDENT to recover precisely than the same physical command expressed
+as a larger normalized number (e.g. local-norm's ~+-0.26), independent of whether the underlying
+raw command is correct. This is a genuine SNR/training-dynamics argument for rescaling the
+STUDENT's action TARGET to a larger-magnitude convention, orthogonal to the "is the raw physical
+value right" question this section just resolved (mostly yes).
+
+Decision: launch training on the current (teacher-norm-throughout, bug-free) sidecar AS-IS first,
+as the clean read on whether this SNR/magnitude effect actually matters in practice. If still 0%
+at iter 3000, that isolates the SNR/magnitude explanation (rules out both the conditioning bug and
+the proprio corruption, since neither is present here) and justifies one more build: teacher-norm
+conditioning + proprio (both correct, keep), but action rescaled to local (bigger training
+signal) on top.
+
+RELAUNCHED:
+  791542  cosmos_teacher_on_demos_500m_train_1task_ketchup       (train)
+  791543  cosmos_distill_experiments_teacher_on_demos_500m_train_1task_ketchup_eval  (eval)
+  Both: dataset_stats_override_path / --dataset_stats_path =
+    /project/aip-courvill/esraa1/hf_cache/models--nvidia--Cosmos-Policy-LIBERO-Predict2-2B/
+    snapshots/cb689ec0e3347c13667d70a78a3447388f5c3bb8/libero_dataset_statistics.json
+  max_iter=3000, task_names=[ketchup], time 7:59:00. Confirmed clean start (no stale
+  train_loss.csv/checkpoints in the run dir -- only an empty slurm/ from an earlier dry-run).
+
+--------------------------------------------------------------------------------
+2026-09-04  791542/791543 FINAL RESULT: intermittent, not converged
+--------------------------------------------------------------------------------
+Training complete (791542, iter 3000, final loss 0.185). Eval (791543) scored all 15
+checkpoints:
+  iter:     200  400  600  800 1000 1200 1400 1600 1800 2000 2200 2400 2600 2800 3000
+  success:   0%   0%   0%  67%   0%   0%   0% 100% 100%   0%   0%   0%   0%  33%   0%
+mean success 20% (3/15 nonzero... actually 4/15 >0), peak at 1600-1800, back to 0% at the FINAL
+checkpoint (3000) -- the one that matters for a head-to-head verdict. Demo baseline: first
+passing at iter 1300, held ~consistently 1800-3000.
+
+Interpretation: the teacher-norm-throughout fix (correct teacher conditioning, no proprio
+corruption -- both real bugs, both fixed) got this run OFF permanent zero for the first time in
+4 attempts, but doesn't converge/hold. Consistent with the SNR/magnitude concern flagged before
+launch: yaw's small normalized amplitude in the teacher's own convention is plausibly still a
+harder, noisier training target for the student, even though the underlying raw/physical command
+is roughly correct (per the earlier unit-conversion re-analysis).
+
+Metrics artifact final: https://claude.ai/code/artifact/0dee1752-384e-4e48-880d-b2b6e316a77d
+
+Summary of all 4 ketchup teacher_on_demos attempts:
+  1. 1-step, teacher-norm throughout (no renorm)         -- 773572/773573    0/3 every checkpoint
+  2. 5-step, teacher-norm throughout (no renorm)          -- [action-dist diag only, not trained]
+  3. 5-step, action->local renorm + BROKEN proprio renorm -- 789317/789318 (cancelled, bug found)
+  4. 5-step, teacher-norm throughout, correct conditioning-- 791542/791543   intermittent, peak
+                                                              100% @ 1600-1800, 0% @ 3000 (final)
+
+Next candidate (not yet built): combine the fixes -- correct teacher-norm conditioning (build's
+LIBERODataset, as in #4) + future_proprio verbatim teacher-norm (as in #4, avoids the #3 blow-up)
++ action RESCALED to local-norm on top (as in #3's action treatment, for training-signal
+magnitude) for the STUDENT's target only. Not yet implemented/decided -- would be a 5th sidecar
+build + 4th train/eval cycle.
+
+--------------------------------------------------------------------------------
+2026-09-04  K-sample (multi-sample, unaveraged) teacher_on_demos support added
+--------------------------------------------------------------------------------
+User's choice: data-AUGMENTATION over averaging -- generate K independent teacher samples per
+(episode, timestep) and store them SEPARATELY (not pre-averaged into one target), so the diffusion
+student sees the teacher's genuine multimodality across training instead of a single noisy point
+estimate (averaging first risks collapsing to an invalid target -- the mean of two valid-but-
+different wrist orientations isn't necessarily itself a valid grasp -- and defeats the point of
+training a diffusion policy to score-match a possibly-multimodal distribution).
+
+Mechanism confirmed: generate_samples_from_batch's ONLY randomness is the initial diffusion noise
+x_sigma_max = misc.arch_invariant_rand(shape, dtype, device, seed) -- np.random.RandomState(seed),
+purely a function of `seed`, no reliance on global RNG state. Same data_batch (same conditioning)
++ different seed = different initial noise = a genuinely different sample from the teacher's
+implied posterior. Calling generate_teacher_native_targets K times per batch with K distinct seeds
+(seed_for_batch + k*1_000_003) gives K independent, reproducible draws.
+
+Code changes:
+  cosmos_policy/datasets/libero_dataset.py
+    - _load_teacher_on_demos_sidecar: every field now (T,K,...) instead of (T,...); doc updated.
+    - __getitem__: new `teacher_on_demos_k = random.randrange(K)` drawn once per call (same k
+      across action_chunks/future_proprio/value/future_image*/future_wrist_image* -- one k is one
+      coherent generation); all 5 indexing sites updated to [relative_step_idx, teacher_on_demos_k].
+      Picked FRESH each __getitem__ call, so different epochs see different draws over training.
+    - BREAKING change to the sidecar schema (no backward-compat shim) -- fine, no training run
+      reads an old (T,...)-shaped sidecar going forward; all archived ones are historical only.
+  kd/build_teacher_on_demos_dataset.py
+    - _new_buffer(num_steps, num_teacher_samples): all arrays gain a K axis;
+      future_image_jpeg/future_wrist_image_jpeg become list-of-K-lists.
+    - _write_episode_group: datasets now (T,K,...); vlen image datasets (T,K); attrs +=
+      num_teacher_samples.
+    - build(): new `num_teacher_samples` param; main loop now `for k_idx in range(K):` calls
+      generate_teacher_native_targets with seed_for_batch + k_idx*_SEED_STRIDE, collects per_k list
+      (NOT averaged), scatters buf[field][rel, k_idx] = ... for every k; buf["filled"] still
+      incremented once per state (after all K writes), so per-episode flush/resume logic unchanged.
+    - module docstring: new "MULTIPLE TEACHER SAMPLES" section.
+  kd/params.py: BuildTeacherOnDemosParams.num_teacher_samples: int = 1 (default = today's
+    behavior, byte-identical sidecar shape otherwise -- just a size-1 K axis).
+  sweep.py: RunConfig.num_teacher_samples: int = 1 (build_teacher_on_demos only).
+  submit_sweep.py: _build_teacher_on_demos_params passes it through to params.yaml.
+
+Data lineage (archived, all preserved):
+  __1denoisestep/                1-step, teacher-norm both, K=1
+  __5step_teachernorm/           5-step, teacher-norm both, K=1
+  __5step_actionfix_badproprio/  5-step, action->local + BROKEN proprio->local renorm, K=1
+  __teachernorm_k1/              5-step, teacher-norm throughout (correct conditioning), K=1
+                                  (== the just-finished 791542/791543 run; train/eval dirs also
+                                  archived as *__teachernorm_k1)
+  libero_object_regen__teacher_on_demos/  5-step, teacher-norm throughout, K=5 (job 793246, current)
+
+OPERATIONAL NOTE: while archiving, renamed 791543's (eval) still-RUNNING output directory --
+broke its --ckpt_path / --local_log_dir mid-flight, triggering a spurious sim-crash-resume retry
+against now-nonexistent paths. No data lost (eval_results.csv already had all 15 scored
+checkpoints, confirmed intact post-move) -- cancelled the job rather than let it retry uselessly.
+Lesson: check `sacct` state before renaming a run's output dir, not just for the build jobs.
+
+793246  cosmos_distill_experiments_build_teacher_on_demos  SUBMITTED
+        task_names=[ketchup], num_denoising_steps=5, num_teacher_samples=5, time_limit=20:00:00
+        (5x the ~2:45 single-sample build time is a rough estimate; per-episode resume covers
+        under-estimate). params.yaml verified: num_teacher_samples: 5.
+Next: when done, relaunch teacher_on_demos_500m_train + _eval against the K=5 sidecar (same
+dataset_stats_override_path as the K=1 run -- unchanged, still teacher-norm throughout).
+
+--------------------------------------------------------------------------------
+2026-09-04  Full-coverage K enumeration implemented (train-side, does not touch 793246)
+--------------------------------------------------------------------------------
+Random-per-visit k selection (previous entry) under-utilizes K on a short run: with only ~3.8
+epochs at max_iter=3000, E[distinct k's seen per state] = K*(1-(1-1/K)^3.8) ~= 2.9 of 5 -- roughly
+2 of the 5 generated samples per state never get trained on at all. Implemented deterministic
+full-coverage enumeration as an alternative mode, purely on the LIBERODataset (training) side --
+does NOT touch the build script or the sidecar schema, so job 793246 (K=5 build) is completely
+unaffected and kept running throughout.
+
+cosmos_policy/datasets/libero_dataset.py:
+  - new __init__ kwarg `teacher_on_demos_num_samples: int = 1`.
+  - _calculate_epoch_structure: when teacher_on_demos_dir set and teacher_on_demos_num_samples>1,
+    demo_base_count = self.num_steps * teacher_on_demos_num_samples (self.num_steps itself stays
+    the raw per-state count) -> epoch_length = num_steps*K (calculate_epoch_structure's own
+    zero-rollout branch is a straight passthrough, confirmed by reading dataset_common.py).
+  - __getitem__ demo branch: teacher_on_demos_k_enum = idx // self.num_steps when in full-coverage
+    mode (idx % self.num_steps still recovers the state as before) -- else None.
+  - teacher_on_demos_k selection: teacher_on_demos_k_enum (deterministic) if set, else the
+    existing random.randrange(K) fallback -- so K=1 (default) or omitting the new kwarg is a
+    complete no-op, byte-identical to before.
+  - assert teacher_on_demos_k_enum < K (the sidecar's ACTUAL per-episode K) so a
+    teacher_on_demos_num_samples mismatch against the real sidecar fails loudly, not silently.
+
+sweep.py: RunConfig.teacher_on_demos_num_samples: int = 1 (torchrun path).
+submit_sweep.py: torchrun branch adds dataloader_train.dataset.teacher_on_demos_num_samples to
+  overrides when != 1.
+
+Consequence for the eventual training run: epoch_length becomes 6341*5 = 31,705 for ketchup (was
+6341) -- steps/epoch at batch_size=8 goes from ~793 to ~3963. To get comparable per-state exposure
+to the earlier K=1 run (~3.8 epochs), max_iter would need ~15,000; chose a lighter compromise for
+the first K=5 run instead -- max_iter=6000 (~1.5 full passes over all 31,705 (state,k) pairs,
+~3.8h wall time at the measured 2.3s/iter) -- adjustable once we see how it's converging.
+Dry-run verified: teacher_on_demos_num_samples=5 correctly appears in the generated sbatch's
+torchrun overrides.
+
+Not yet submitted -- waiting on 793246 (K=5 sidecar build) to finish first.
+
+--------------------------------------------------------------------------------
+2026-09-07  793246 confirmed complete; K=5 full-coverage train+eval launched
+--------------------------------------------------------------------------------
+Picked back up after a 2-day gap (last activity 2026-09-05 07:22). Verified 793246 (K=5 sidecar
+build) via sacct (COMPLETED, exit 0:0) and its stdout log ("Done: 1 sidecar file(s) written under
+.../libero_object_regen__teacher_on_demos"); the stderr had a wall of OSError: [Errno 16] Device or
+resource busy: '.nfs...' lines from atexit tempdir cleanup racing an NFS sentinel file -- harmless,
+not a real failure (job exit code and stdout both clean). Sidecar file present: 1.08 GB
+pick_up_the_ketchup_and_place_it_in_the_basket_demo.teacher_on_demos.hdf5. Code changes from the
+prior two entries (full-coverage K enumeration, dataset_stats_override_path,
+teacher_on_demos_num_samples) all still present, uncommitted, in the working tree -- no drift.
+
+Submitted the queued next step: teacher-norm-throughout conditioning (correct, per the
+2026-09-04 BIGGER FIX) + K=5 full-coverage enumeration, dataset_stats_override_path pinned to the
+teacher checkpoint's own libero_dataset_statistics.json (same file as the K=1 run). New job_names
+(suffixed _k5) so this doesn't collide with or resume from the archived K=1
+(__teachernorm_k1) run's checkpoints -- confirmed both new run dirs were empty (only the
+dry-run's slurm/ subdir) before submitting.
+
+  828271  cosmos_teacher_on_demos_500m_train_1task_ketchup_k5       (train, RUNNING on rack05-03)
+  828272  cosmos_distill_experiments_..._ketchup_k5_eval            (eval, PENDING -- resources)
+  Both: max_iter=6000, task_names=[ketchup], teacher_on_demos_num_samples=5, time_limit=15:00:00
+  (buffer scaled from the K=1 run's 7:59:00-limit/1:58:31-actual ratio for the 2x max_iter).
+  train: dataset_stats_override_path = teacher's own stats file.
+  eval: eval_dataset_stats_path = same file (overrides the yaml default of the local/success_only
+  stats -- eval must read checkpoint output in the same convention it was trained in).
+
+Next: when 828271/828272 progress, check the eval success-rate curve across checkpoints (same
+per-200-iter cadence as the K=1 run) -- looking for whether full-coverage K=5 exposure fixes the
+K=1 run's intermittent-then-0%-at-final-checkpoint pattern (791542/791543), which would support the
+SNR/magnitude explanation over a remaining correctness bug.
+
+--------------------------------------------------------------------------------
+2026-09-07/08  K=5 FULL-COVERAGE RESULT: sustained success (BREAKTHROUGH)
+--------------------------------------------------------------------------------
+(Session gap: build 793246 + this train/eval launched by the user directly. Config matches what
+was set up 2026-09-04.)
+
+793246  K=5 ketchup sidecar build   COMPLETED 13:45:27 (2026-09-05T07:22), under the 20h budget.
+828271  cosmos_teacher_on_demos_500m_train_1task_ketchup_k5   COMPLETED 3:56:27, iter 6000,
+        final loss 0.164.  max_iter=6000, teacher_on_demos_num_samples=5,
+        dataset_stats_override_path=<teacher's libero_dataset_statistics.json>. Full-coverage
+        epoch = 6341*5 = 31,705 -> ~1.51 passes over all (state,k) pairs in 6000 iters.
+828272  ..._k5_eval   TIMEOUT 15:00:02 -- but had already scored ALL 30 checkpoints (200..6000)
+        before timing out (it was just idling post-training). No data lost.
+
+Closed-loop success rate (3 trials/checkpoint, ketchup):
+  200-1000:  0/3
+  1200:1.0  1400:0  1600:0  1800:1.0  2000:0  2200:0  2400:1.0  2600:0  2800:1.0
+  3000..6000: 1.0 at EVERY checkpoint except one dip to 0.667 at 5400
+  => from iter 3000 on: 16/16 checkpoints >0, mean 98%. HELD, not intermittent.
+
+This is the first teacher_on_demos ketchup run to sustain success. Progression across the 4
+serious attempts:
+  1-step teacher-norm K=1        -> 0% every checkpoint
+  5-step teacher-norm K=1 (791542) -> intermittent, peak 100% @ 1600-1800, 0% at final ckpt
+  5-step action->local + bad proprio renorm K=1 -> cancelled (proprio blow-up bug)
+  5-step teacher-norm K=5 full-coverage (828271) -> holds ~100% from iter 3000-6000  <-- THIS
+
+What did it: (a) teacher-norm-throughout normalization (correct teacher conditioning + no
+per-field renorm, from the 791542 run) + (b) K=5 independent samples per state, stored unaveraged,
+every one visited once per epoch (full-coverage). (b) is what converted 791542's "peaks then
+collapses" into a stable policy -- consistent with the label-noise / diffusion-multimodality
+argument: one teacher draw per state is too noisy a target; 5, seen as separate examples, let the
+EDM loss learn the actual conditional distribution.
+
+Metrics artifact: https://claude.ai/code/artifact/515e3a3d-cb33-4570-8004-733b9f57af35
+
+Next: the full head-to-head -- build all 10 libero_object task sidecars at K=5, run the full
+10-task teacher_on_demos_500m_train + _eval, compare success-rate curves to baseline_500m_train
+(765180, the non-saturated 10-task baseline). Also the 1b pair. Not yet started.
+
+--------------------------------------------------------------------------------
+2026-09-08  Artifacts for the K=5 result + a chart-scale fix
+--------------------------------------------------------------------------------
+- Metrics artifact for the K=5 run had a latent bug: the template's success/loss chart x-axis was
+  hardcoded to a [0, 3000] domain (px = i => .../3000), so every checkpoint past iter 3000
+  (i.e. 3200..6000) was drawn off the right edge and invisible -- the data was all present.
+  Fixed: x-scale now computes MAXIT from the data and the ticks adapt.
+  https://claude.ai/code/artifact/515e3a3d-cb33-4570-8004-733b9f57af35
+
+- New artifact -- the training objective for the K=5 agent, math rendered (MathJax tex-svg):
+  "K=5 Teacher Objective"  https://claude.ai/code/artifact/28fe1b72-4c6a-44d0-a180-54607ce3dfb7
+  Summary of the objective (for the record):
+    * Same joint EDM diffusion loss as the demo baseline. ONLY the clean latent x_0 changes.
+    * The 4 denoising targets (action chunk / future image / future proprio / value) are 100%
+      teacher-generated -- no ground-truth term, no blending (that mixing is the KD path's
+      combined_kd_loss, not this torchrun path). The demo supplies the STATES and the current
+      OBSERVATION the teacher is conditioned on; the teacher supplies the answers.
+    * Per state s (6341 ketchup timesteps), draw K=5 independent teacher samples
+      xi^(s,k) ~ q_phi(.|o(s),l) -- one reverse-diffusion pass each (num_steps=5, action slot
+      free, num_conditional_frames=4), from independently seeded initial noise (arch_invariant_rand
+      is seeded purely by the `seed` arg -> distinct seeds = distinct draws).
+    * Build x_0^(s,k) = Phi( sigma_d * E(V_aug^(s,k)) ; a~, p_cur, p'~, v'~ ), everything in the
+      TEACHER's own dataset_statistics normalization (student trains + evals in that same
+      convention -- dataset_stats_override_path).
+    * l_EDM(theta; x_0, c) = standard EDM x0-prediction loss, kappa=10,
+      lambda(sigma)=(sigma^2+sigma_d^2)/(sigma*sigma_d)^2, hybrid schedule, unmasked over all
+      N_lat = 9*16*28*28 = 112,896 latent elements.
+    * Full objective: L(theta) = (1/NK) sum_s sum_k E_aug l_EDM(theta; x_0^(s,k), c(s)),
+      every (s,k) a SEPARATE training example, epoch = N*K = 31,705, max_iter=6000 ~= 1.5 passes.
+    * This is a K-sample Monte-Carlo estimate of the forward-KL projection
+      min_theta E_s KL( q_phi(.|s) || p_theta(.|s) ) -- the student score-matches the teacher's
+      WHOLE conditional, not one draw. That is the K=1 -> K=5 delta; nothing else in the loss
+      changed.
+
+Current state (start of 2026-09-08 session): no jobs queued/running. K=5 ketchup result is in.
+Next unchanged: full 10-task libero_object head-to-head (build all 10 K=5 sidecars, run
+teacher_on_demos_500m_train + _eval vs baseline_500m_train, then the 1b pair). Not started.
+Uncommitted on branch teacher-on-demos: 6 modified tracked files + ~15 new (build script, run
+yamls, analysis scripts, journal, TEACHER_ON_DEMOS_PLAN.md, tex/pdf). Nothing committed yet.
+
+--------------------------------------------------------------------------------
+2026-09-08  Experiment A: K=1 teacher-norm, RESUME 791542 from iter 3000 -> 6000
+--------------------------------------------------------------------------------
+Purpose: settle the K=5 confound. 791542 (K=1 teacher-norm) was max_iter=3000 and collapsed;
+828271 (K=5) was max_iter=6000 and held. Two variables changed. This resumes 791542's exact
+trajectory (iter_3000 checkpoint has full DCP train state: model/optim/scheduler/trainer) to
+6000, so the ONLY difference from 828271 is K=1 vs K=5.
+  - If it also holds ~100% at 3200-6000 -> "more iterations" was the fix, K=5 unnecessary,
+    10-task build gets ~5x cheaper.
+  - If still intermittent/collapsed -> K=5 is doing the work.
+
+Code: cosmos_policy/datasets/libero_dataset.py -- added a backward-compat shim to
+_load_teacher_on_demos_sidecar (reverses the earlier "BREAKING change, no shim" note): a pre-K
+sidecar (action_chunks (T,chunk,7), no sample axis) gets a size-1 K axis inserted on load
+(action_chunks[:,None] etc.), so __getitem__'s k-indexing resolves to 0 and everything downstream
+is uniform. Needed because 791542's sidecar (__teachernorm_k1, built by job 790396) predates the
+K-axis schema. teacher_on_demos_num_samples NOT passed -> default 1 -> epoch structure unchanged,
+identical to what 791542 trained on.
+
+844860  cosmos_teacher_on_demos_500m_train_1task_ketchup__teachernorm_k1  (train, RESUME 3000->6000)
+844861  ..._eval__teachernorm_k1  (eval -- re-reads its eval_results.csv, scores 3200-6000 only)
+        overrides: max_iter=6000, task_names=[ketchup], time 7:59:00,
+        teacher_on_demos_dir=<__teachernorm_k1 sidecar>, dataset_stats_override_path=<teacher stats>.
+        submit_sweep confirmed AUTO-RESUME from iter_000003000. ~3h new compute.
+
+--------------------------------------------------------------------------------
+2026-09-08  Experiment A RESULT: K=1 does NOT hold at the K=5 schedule -> K=5 is doing the work
+--------------------------------------------------------------------------------
+844860 train COMPLETED 20:48:52 (5:02 elapsed incl. the pre-3000 replay), iter 6000, final loss
+0.13. 844861 eval scored every checkpoint 3200-6000 by 20:51, then idled to the 23:45 walltime
+cap (TIMEOUT, no data lost -- same idle-post-training pattern as the K=5 eval 828272).
+
+Closed-loop success (K=1 teacher-norm, 3 trials/ckpt), resumed range:
+  3200:0.33 3400:0   3600:0   3800:0.67 4000:0.67
+  4200:1.0  4400:1.0 4600:1.0 4800:1.0  5000:1.0
+  5200:0    5400:1.0 5600:0.67 5800:1.0 6000:1.0
+  - 3200-3600: near-zero (resume transient, model re-stabilising off the iter-3000 checkpoint).
+  - 4200-5000: five straight 1.0 -- briefly looked matched to K=5.
+  - 5200: HARD collapse to 0/3, then 0.67 at 5600. Mean over 4200-6000 = 0.87.
+
+K=5 (828271) over the same 3200-6000 window: 1.0 at every checkpoint except a single 0.667 at
+5400 -- 15/15 >= 0.667, mean ~0.98, never a zero anywhere from iter 3000 on.
+
+VERDICT: "more iterations" is NOT the fix. K=1 at the full 6000-iter schedule still carries the
+intermittent full-collapse failure mode (0/3 at iter 5200, well past the resume transient) that
+K=5 never exhibits. The full-coverage K=5 result's stability is attributable to K=5, not the
+longer schedule. Consistent with the label-noise / diffusion-multimodality argument: one teacher
+draw per state is too noisy a regression target regardless of how long you train on it.
+
+Implication for the 10-task / all-suites head-to-head: K=5 is required. No ~5x shortcut -- the
+per-task sidecars are the larger K=5 ones (~1.08 GB/task measured on ketchup, ~12 GB for all 10
+libero_object tasks, ~45-50 GB for all 4 suites at K=5). One build job per task: 10 for
+libero_object now (the only suite staged on Vulcan); 40 for all 4 standard suites once
+spatial/goal/10 *_regen demos are brought over (currently broken symlinks under
+LIBERO-Cosmos-Policy/success_only). Per-task K=5 build ~13.75h (job 793246) -- bump the build
+yaml's time_limit above its 7:59 default or rely on per-episode resume + requeue.
+
+Artifact updated (same URL, K=1 run's own metrics artifact, now 3000->6000 + confound verdict +
+adaptive x-scale): https://claude.ai/code/artifact/0dee1752-384e-4e48-880d-b2b6e316a77d
+
+Current state: no jobs queued/running. Confound settled. Next unchanged: full 10-task
+libero_object K=5 head-to-head (build 10 K=5 sidecars, teacher_on_demos_500m_train + _eval vs
+baseline_500m_train 765180), then the 1b pair.

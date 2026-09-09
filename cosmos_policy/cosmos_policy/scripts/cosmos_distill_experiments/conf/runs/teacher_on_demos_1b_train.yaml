@@ -1,0 +1,28 @@
+# Byte-for-byte baseline_1b_train.yaml (same experiment, size, data states, torchrun/Trainer path,
+# joint EDM objective, teacher-derived DCP init, iteration count, eval) EXCEPT the four joint
+# denoising targets come from the teacher's own generation for each demo state -- via the
+# libero_object_regen__teacher_on_demos sidecar (build it first with build_teacher_on_demos.yaml).
+# Head-to-head partner of baseline_1b_train. See kd/TEACHER_ON_DEMOS_PLAN.md.
+job_name: cosmos_teacher_on_demos_1b_train
+
+data_root: ${oc.env:COSMOS_POLICY_STORAGE,/project/rrg-gberseth/esraa1/cosmos_policy_storage}/LIBERO-Cosmos-Policy/success_only
+output_root: ${oc.env:COSMOS_POLICY_STORAGE,/project/rrg-gberseth/esraa1/cosmos_policy_storage}/cosmos_dit_wm_output
+
+experiment: cosmos_kd_student_1b_libero
+suites: [libero_object_regen]
+max_iter: 30000
+batch_size: 8
+checkpoint_save_iter: 200
+extra_overrides:
+  checkpoint.load_path: ${oc.env:COSMOS_POLICY_STORAGE,/project/rrg-gberseth/esraa1/cosmos_policy_storage}/kd_inits/student_init_1b_dcp
+# The teacher-target sidecar (built by build_teacher_on_demos.yaml). baseline_1b_train has no
+# staging, so this is passed by absolute path (no $SLURM_TMPDIR copy).
+teacher_on_demos_dir: ${oc.env:COSMOS_POLICY_STORAGE,/project/rrg-gberseth/esraa1/cosmos_policy_storage}/LIBERO-Cosmos-Policy/success_only/libero_object_regen__teacher_on_demos
+# Distinct from baseline_1b_train's default 12341 -- avoids torchrun rendezvous EADDRINUSE if this
+# co-runs on the same physical node.
+master_port: 12346
+time_limit: "12:00:00"
+mem: "40G"
+cpus: 8
+account: ${oc.env:COSMOS_POLICY_ACCOUNT,rrg-gberseth}
+filename: teacher_on_demos_1b_train.sbatch

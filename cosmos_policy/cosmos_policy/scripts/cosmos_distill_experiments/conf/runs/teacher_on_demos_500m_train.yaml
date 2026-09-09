@@ -1,0 +1,34 @@
+# Byte-for-byte baseline_500m_train.yaml (same experiment, size, data states, torchrun/Trainer
+# path, joint EDM objective, teacher-derived DCP init, iteration count, staging, eval) EXCEPT the
+# four joint denoising targets (action chunk, future image, future proprio, value) come from the
+# teacher's own generation for each demo state instead of the human demo -- via the
+# libero_object_regen__teacher_on_demos sidecar (build it first with
+# build_teacher_on_demos.yaml). LIBERODataset's teacher_on_demos_dir kwarg is the only knob;
+# nothing in the training/loss path changes. Head-to-head partner of baseline_500m_train.
+# See kd/TEACHER_ON_DEMOS_PLAN.md.
+job_name: cosmos_teacher_on_demos_500m_train
+
+data_root: ${oc.env:COSMOS_POLICY_STORAGE,/project/rrg-gberseth/esraa1/cosmos_policy_storage}/LIBERO-Cosmos-Policy/success_only
+output_root: ${oc.env:COSMOS_POLICY_STORAGE,/project/rrg-gberseth/esraa1/cosmos_policy_storage}/cosmos_dit_wm_output
+
+experiment: cosmos_kd_student_500m_libero
+suites: [libero_object_regen]
+max_iter: 30000
+batch_size: 8
+checkpoint_save_iter: 200
+num_workers: 4
+stage_data_to_tmpdir: true
+extra_overrides:
+  checkpoint.load_path: ${oc.env:COSMOS_POLICY_STORAGE,/project/rrg-gberseth/esraa1/cosmos_policy_storage}/kd_inits/student_init_500m_dcp
+# The teacher-target sidecar (built by build_teacher_on_demos.yaml). submit_sweep.py stages this to
+# node-local NVMe alongside the suite (it's a sibling of the suite dir, so the suite's own cp -rL
+# does not pick it up) and injects it as dataloader_train.dataset.teacher_on_demos_dir.
+teacher_on_demos_dir: ${oc.env:COSMOS_POLICY_STORAGE,/project/rrg-gberseth/esraa1/cosmos_policy_storage}/LIBERO-Cosmos-Policy/success_only/libero_object_regen__teacher_on_demos
+# Distinct from baseline_500m_train's 12343 / baseline_1b's 12341 -- avoids torchrun rendezvous
+# EADDRINUSE if this lands on the same physical node as another 1-GPU torchrun job.
+master_port: 12345
+time_limit: "47:00:00"
+mem: "40G"
+cpus: 8
+account: ${oc.env:COSMOS_POLICY_ACCOUNT,rrg-gberseth}
+filename: teacher_on_demos_500m_train.sbatch

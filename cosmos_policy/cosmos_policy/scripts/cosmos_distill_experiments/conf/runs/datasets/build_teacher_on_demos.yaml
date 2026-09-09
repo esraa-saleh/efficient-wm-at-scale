@@ -1,0 +1,57 @@
+# Builds the "teacher_on_demos" sidecar dataset -- see kd/build_teacher_on_demos_dataset.py's
+# module docstring and kd/TEACHER_ON_DEMOS_PLAN.md for what this is: for every timestep of every
+# libero_object_regen demo, the teacher's own freely-generated action chunk + imagined future
+# image / future proprio / value, stored keyed to (source episode, timestep). The
+# teacher_on_demos_{500m,1b}_train runs consume it via LIBERODataset's teacher_on_demos_dir kwarg
+# on the plain torchrun path -- NOT a kd_* run type, and NOT the ShardWriter KD format the
+# build_*_distill_dataset builds write.
+#
+# Not a training run: no checkpoint. IS resumable at source-file granularity (a sidecar marked
+# complete=True is skipped) -- so per-task sharding is the recommended way to split the
+# ~65k-timestep libero_object build into ~2-5h jobs:
+#   submit_sweep launch.only=[build_teacher_on_demos] launch.submit=true \
+#     runs.build_teacher_on_demos.task_names=[ketchup]
+# Omitting task_names builds every task in one (long) job; file-level resume covers requeues.
+job_name: cosmos_distill_experiments_build_teacher_on_demos
+run_type: build_teacher_on_demos
+gpus: 1
+
+# Same account storage as the baseline_*_train / build_* runs -- each yaml fully determines itself.
+data_root: ${oc.env:COSMOS_POLICY_STORAGE,/project/rrg-gberseth/esraa1/cosmos_policy_storage}/LIBERO-Cosmos-Policy/success_only
+output_root: ${oc.env:COSMOS_POLICY_STORAGE,/project/rrg-gberseth/esraa1/cosmos_policy_storage}/cosmos_dit_wm_output
+
+# The one suite the baseline_* runs (and their evals) use. Demos only -- the sidecar is demo-keyed.
+suites: [libero_object_regen]
+rollout_data_dir: ""
+
+# Teacher query batch size. 8 is what build_teacher_native_distill_dataset.py uses on these same
+# L40S nodes and what the max_episodes=2 smoketest (job 772502) ran clean at; 24 OOM'd the WAN2.1
+# VAE encode of a (B,3,33,224,224) video batch on a 44 GB L40S (job 772798). Do NOT raise without
+# testing. workers hide the per-__getitem__ full-episode image re-read that dominates wall time.
+batch_size: 8
+build_num_workers: 8
+# Match real LIBERO eval: run_libero_eval.py defaults num_denoising_steps_action=5 with
+# ar_future_prediction / ar_value_prediction False, so get_action() does ONE joint
+# generate_samples_from_batch(num_steps=5) and reads action + future state + value + future images
+# out of that single 5-step latent (generate_future_state_and_value_in_parallel=True). The
+# num_denoising_steps_future_state=1 / _value=1 in that config only apply when ar_* is True.
+# generate_teacher_native_targets uses the same one-joint-call structure, so 5 here == eval.
+# (The 1-step build is archived at libero_object_regen__teacher_on_demos__1denoisestep/.)
+num_denoising_steps: 5
+device: cuda:0
+seed: 0
+
+# Sidecar root -- a SIBLING of libero_object_regen/ (never nested inside it: get_hdf5_files walks
+# data_dir recursively and would otherwise ingest the sidecars as data).
+teacher_on_demos_build_dir: ${oc.env:COSMOS_POLICY_STORAGE,/project/rrg-gberseth/esraa1/cosmos_policy_storage}/LIBERO-Cosmos-Policy/success_only/libero_object_regen__teacher_on_demos
+
+# Per-task default. One libero_object task (~42 successful episodes, ~6k timesteps) was ~2.5h wall
+# at num_denoising_steps=1; at 5 the per-timestep teacher denoise is ~5x, so budget ~6-8h.
+# The build writes each episode group as it finishes (episode_complete=True) and resumes per
+# episode, so a timeout only costs the in-flight episode. For an un-sharded all-10-tasks run,
+# override to ~24:00:00 or shard by task.
+time_limit: "7:59:00"
+mem: "80G"
+cpus: 8
+account: ${oc.env:COSMOS_POLICY_ACCOUNT,rrg-gberseth}
+filename: build_teacher_on_demos.sbatch

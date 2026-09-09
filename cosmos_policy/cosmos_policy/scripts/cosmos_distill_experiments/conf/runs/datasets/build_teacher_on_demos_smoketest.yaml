@@ -1,0 +1,39 @@
+# Small, fast smoketest of kd/build_teacher_on_demos_dataset.py: one task, first 2 episodes only,
+# short walltime. Exists to catch shape/logic errors in the generate_teacher_native_targets call
+# graph and the sidecar write/read round-trip -- NOT to produce a usable training dataset. Writes
+# to its own teacher_on_demos_build_dir, never touches the real libero_object_regen__teacher_on_demos.
+#
+# The sidecar it writes is complete=False (2 of ~50 ketchup episodes), so it cannot back a
+# training run -- LIBERODataset would KeyError on an un-built episode. To smoketest training end to
+# end, first run a real single-task build (build_teacher_on_demos with task_names=[ketchup]), then
+# a max_iter=1 teacher_on_demos_500m_train with task_names=[ketchup].
+job_name: cosmos_distill_experiments_build_teacher_on_demos_smoketest
+run_type: build_teacher_on_demos
+gpus: 1
+
+data_root: ${oc.env:COSMOS_POLICY_STORAGE,/project/rrg-gberseth/esraa1/cosmos_policy_storage}/LIBERO-Cosmos-Policy/success_only
+output_root: ${oc.env:COSMOS_POLICY_STORAGE,/project/rrg-gberseth/esraa1/cosmos_policy_storage}/cosmos_dit_wm_output
+
+suites: [libero_object_regen]
+rollout_data_dir: ""
+task_names: [ketchup]
+
+batch_size: 8
+build_num_workers: 8
+num_denoising_steps: 5  # match real eval (run_libero_eval.py num_denoising_steps_action default)
+# Just 2 episodes -- enough to exercise the generate -> extract -> jpeg -> write -> reload path.
+# Runtime is then dominated by the one-time teacher load, not generation. The sidecar is written
+# complete=False (2 of ~50 groups), so a real build_teacher_on_demos run rebuilds ketchup in full.
+build_max_episodes: 2
+device: cuda:0
+seed: 0
+
+teacher_on_demos_build_dir: ${oc.env:COSMOS_POLICY_STORAGE,/project/rrg-gberseth/esraa1/cosmos_policy_storage}/LIBERO-Cosmos-Policy/success_only/libero_object_regen__teacher_on_demos_smoketest
+
+# ~2 episodes (~260 steps) at batch 8, 5 denoise steps -- still a few minutes of generation; the
+# rest is teacher load.
+time_limit: "00:30:00"
+mem: "80G"
+cpus: 8
+account: ${oc.env:COSMOS_POLICY_ACCOUNT,rrg-gberseth}
+filename: build_teacher_on_demos_smoketest.sbatch

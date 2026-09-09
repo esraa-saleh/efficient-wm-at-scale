@@ -19,10 +19,11 @@ Run this command to print a few samples from the LIBERO dataset:
     python -m cosmos_policy.datasets.libero_dataset
 """
 
+import json
 import os
 import pickle
 import random
-from collections import defaultdict
+from collections import OrderedDict, defaultdict
 
 import h5py
 import imageio
@@ -50,6 +51,7 @@ from cosmos_policy.datasets.dataset_utils import (
     preprocess_image,
     rescale_data,
     rescale_episode_data,
+    resize_images,
 )
 from cosmos_policy.utils.utils import duplicate_array
 
@@ -80,6 +82,9 @@ class LIBERODataset(Dataset):
         return_value_function_returns: bool = True,
         gamma: float = 0.99,
         task_names: list | None = None,
+        teacher_on_demos_dir: str = "",
+        dataset_stats_override_path: str = "",
+        teacher_on_demos_num_samples: int = 1,
     ):
         """
         Initialize LIBERO dataset for training.
@@ -112,6 +117,39 @@ class LIBERODataset(Dataset):
                 dir as usual (dataset_statistics.json still resolves from there, so normalization
                 stays consistent with the full suite) and this filters which files it actually
                 reads. None (default) loads every task in data_dir, unchanged from before.
+            teacher_on_demos_dir (str): If non-empty, a sidecar dataset root (built by
+                kd/build_teacher_on_demos_dataset.py) mirroring `data_dir`'s layout. For every demo
+                sample, the action chunk, future proprio, value_function_return, and future
+                primary/wrist images are overridden with the teacher's predictions for that
+                (episode, timestep) instead of the human demo's -- everything else in __getitem__
+                (current obs, all blanks, latent indices, masks, t5, augmentation) is unchanged.
+                "" (default) is a complete no-op: byte-identical to the pre-existing behavior. Only
+                consulted for `sample_type == "demo"` (this path is demo-only when set). See
+                kd/TEACHER_ON_DEMOS_PLAN.md.
+            dataset_stats_override_path (str): If non-empty, a local path to a
+                dataset_statistics.json to use INSTEAD OF computing/loading one from `data_dir` --
+                e.g. the teacher checkpoint's own stats file, when this dataset's action/proprio
+                values are meant to match a normalization convention other than the local suite's
+                (teacher_on_demos: the teacher generates in its own convention, so training the
+                student against it end-to-end -- current proprio, action, future proprio all in the
+                teacher's own scale -- avoids the per-field renormalization that a mismatched
+                convention otherwise requires; see kd/build_teacher_on_demos_dataset.py and
+                experiment_journal.txt 2026-09-04). Never writes back to `data_dir`; the
+                post-normalization diagnostic stats (unused elsewhere) are skipped in this mode so
+                a mismatched file never gets cached at data_dir/dataset_statistics_post_norm.json.
+                "" (default) is a complete no-op: byte-identical to the pre-existing behavior.
+            teacher_on_demos_num_samples (int): How many independent teacher samples K the
+                teacher_on_demos_dir sidecar stores per (episode, timestep) (see
+                kd/build_teacher_on_demos_dataset.py's "MULTIPLE TEACHER SAMPLES" docstring
+                section). 1 (default): every state is visited once per epoch (as always) and, if
+                the sidecar happens to store more than one sample anyway, __getitem__ picks one at
+                random each visit -- byte-identical to the pre-existing behavior when the sidecar
+                itself has K=1. >1: FULL-COVERAGE mode -- the epoch is expanded from `num_steps` to
+                `num_steps * K` entries so every one of the K generated samples for every state is
+                visited exactly once per epoch (deterministically, via floor-division on the global
+                index), instead of a random subset determined by how many epochs happen to run.
+                Must match the sidecar's actual K (asserted at __getitem__ time). Only meaningful
+                together with teacher_on_demos_dir; ignored otherwise.
         """
         self.data_dir = data_dir
         self.chunk_size = chunk_size
@@ -133,6 +171,12 @@ class LIBERODataset(Dataset):
         self.return_value_function_returns = return_value_function_returns
         self.gamma = gamma
         self.task_names = task_names
+        self.teacher_on_demos_dir = teacher_on_demos_dir
+        self.dataset_stats_override_path = dataset_stats_override_path
+        self.teacher_on_demos_num_samples = teacher_on_demos_num_samples
+        # episode_idx -> dict of this episode's teacher sidecar arrays (small LRU, images dominate).
+        self._teacher_on_demos_cache = OrderedDict()
+        self._teacher_on_demos_cache_size = 8
 
         assert self.use_wrist_images or self.use_third_person_images, (
             "Must use at least one of wrist images or third-person images!"
@@ -267,12 +311,18 @@ class LIBERODataset(Dataset):
             with open(t5_text_embeddings_path, "rb") as file:
                 self.t5_text_embeddings = pickle.load(file)
 
-        # Calculate dataset statistics if the stats file doesn't exist
-        self.dataset_stats = load_or_compute_dataset_statistics(
-            data_dir=self.data_dir,
-            data=self.data,
-            calculate_dataset_statistics_func=calculate_dataset_statistics,
-        )
+        # Calculate dataset statistics if the stats file doesn't exist -- unless a different
+        # convention entirely was requested (dataset_stats_override_path), e.g. the teacher
+        # checkpoint's own, in which case load that instead and never touch data_dir.
+        if self.dataset_stats_override_path:
+            with open(self.dataset_stats_override_path, "r") as f:
+                self.dataset_stats = {k: np.array(v) for k, v in json.load(f).items()}
+        else:
+            self.dataset_stats = load_or_compute_dataset_statistics(
+                data_dir=self.data_dir,
+                data=self.data,
+                calculate_dataset_statistics_func=calculate_dataset_statistics,
+            )
 
         # Normalize actions and/or proprio
         if self.normalize_actions or self.normalize_proprio:
@@ -281,12 +331,15 @@ class LIBERODataset(Dataset):
             if self.normalize_proprio:
                 self.data = rescale_data(self.data, self.dataset_stats, "proprio")
 
-            # Calculate post-normalization action statistics
-            self.dataset_stats_post_norm = load_or_compute_post_normalization_statistics(
-                data_dir=self.data_dir,
-                data=self.data,
-                calculate_dataset_statistics_func=calculate_dataset_statistics,
-            )
+            if not self.dataset_stats_override_path:
+                # Calculate post-normalization action statistics (diagnostic only, unused
+                # elsewhere -- skipped under an override so a mismatched-convention file never
+                # gets cached at data_dir/dataset_statistics_post_norm.json).
+                self.dataset_stats_post_norm = load_or_compute_post_normalization_statistics(
+                    data_dir=self.data_dir,
+                    data=self.data,
+                    calculate_dataset_statistics_func=calculate_dataset_statistics,
+                )
 
         # ====================================================================
         # If applicable, load rollout dataset metadata (lazy loading)
@@ -409,6 +462,12 @@ class LIBERODataset(Dataset):
             self._rollout_total_steps = self._rollout_success_total_steps + self._rollout_failure_total_steps
 
         demo_base_count = self.num_steps
+        if self.teacher_on_demos_dir and self.teacher_on_demos_num_samples > 1:
+            # Full-coverage mode: expand the epoch so every one of the K generated samples for
+            # every state is visited exactly once per epoch (see teacher_on_demos_num_samples'
+            # own docstring). self.num_steps itself stays the raw per-state count -- __getitem__
+            # recovers it via floor-division on the (now K-times-larger) global index.
+            demo_base_count = self.num_steps * self.teacher_on_demos_num_samples
 
         result = calculate_epoch_structure(
             num_steps=demo_base_count,
@@ -527,6 +586,80 @@ class LIBERODataset(Dataset):
 
         return images, wrist_images
 
+    def _teacher_on_demos_sidecar_path(self, episode_metadata):
+        """Mirror of kd/build_teacher_on_demos_dataset.sidecar_path_for: the source file's path
+        relative to `data_dir`, under `teacher_on_demos_dir`, with `.teacher_on_demos` inserted
+        before the extension. Keyed on (file_path, data_dir) so it is unaffected by `task_names`
+        filtering (which only re-numbers episode_idx)."""
+        rel = os.path.relpath(episode_metadata["file_path"], self.data_dir)
+        base, ext = os.path.splitext(rel)
+        return os.path.join(self.teacher_on_demos_dir, base + ".teacher_on_demos" + ext)
+
+    def _load_teacher_on_demos_sidecar(self, episode_idx):
+        """Lazily load (and LRU-cache) one demo episode's teacher-target arrays from its sidecar
+        HDF5. Returns a dict with a leading (T, K) shape on every field -- K independent teacher
+        samples per timestep (different initial diffusion noise, same conditioning; see
+        kd/build_teacher_on_demos_dataset.py's module docstring), kept SEPARATE rather than
+        averaged so training sees the teacher's genuine multimodality: action_chunks (T,K,chunk,7)
+        f32, future_proprio (T,K,9) f32, value (T,K) f32 in [-1,1], future_image_jpeg /
+        future_wrist_image_jpeg (T,K) object arrays of raw JPEG bytes. __getitem__ picks one
+        k uniformly at random per call (see `teacher_on_demos_k` below) -- the SAME k across all
+        four fields for a given call, since they're one coherent generation. Raises
+        FileNotFoundError naming the missing sidecar if the build didn't cover this episode (e.g.
+        a per-task build without a matching task_names on this run)."""
+        cached = self._teacher_on_demos_cache.get(episode_idx)
+        if cached is not None:
+            self._teacher_on_demos_cache.move_to_end(episode_idx)
+            return cached
+
+        episode_metadata = self.data[episode_idx]
+        if "file_path" not in episode_metadata:
+            # treat_success_rollouts_as_demos entries carry no source file -- they never occur on
+            # the teacher_on_demos path (rollout_data_dir is unset there), so this is unreachable,
+            # but fail loudly rather than silently serve demo targets if it ever changes.
+            raise RuntimeError("teacher_on_demos_dir set but episode has no source file_path to key a sidecar on")
+        sidecar_path = self._teacher_on_demos_sidecar_path(episode_metadata)
+        if not os.path.exists(sidecar_path):
+            raise FileNotFoundError(
+                f"teacher_on_demos sidecar not found: {sidecar_path} (for episode {episode_metadata['demo_key']} "
+                f"of {episode_metadata['file_path']}). Build it with "
+                f"kd/build_teacher_on_demos_dataset.py, or restrict this run's task_names to the tasks "
+                f"that were built."
+            )
+        demo_key = episode_metadata["demo_key"]
+        with h5py.File(sidecar_path, "r") as f:
+            if demo_key not in f:
+                raise KeyError(f"teacher_on_demos sidecar {sidecar_path} has no group '{demo_key}'")
+            g = f[demo_key]
+            action_chunks = g["action_chunks"][:].astype(np.float32)
+            future_proprio = g["future_proprio"][:].astype(np.float32)
+            value = g["value"][:].astype(np.float32)
+            future_image_jpeg = g["future_image_jpeg"][:]
+            future_wrist_image_jpeg = g["future_wrist_image_jpeg"][:]
+        # Pre-K sidecars have no sample axis (action_chunks (T,chunk,7), value (T,), jpeg fields
+        # (T,)). Insert a size-1 K axis so every consumer below is uniform -- __getitem__'s
+        # random/enum k then always resolves to 0 for these.
+        if action_chunks.ndim == 3:
+            action_chunks = action_chunks[:, None]  # (T,1,chunk,7)
+            future_proprio = future_proprio[:, None]  # (T,1,9)
+            value = value[:, None]  # (T,1)
+            future_image_jpeg = future_image_jpeg[:, None]  # (T,1) object
+            future_wrist_image_jpeg = future_wrist_image_jpeg[:, None]
+        sidecar = dict(
+            action_chunks=action_chunks,  # (T,K,chunk,7)
+            future_proprio=future_proprio,  # (T,K,9)
+            value=value,  # (T,K)
+            # (T,K) object arrays -- h5py hands back each vlen cell as its own uint8 ndarray.
+            future_image_jpeg=future_image_jpeg,
+            future_wrist_image_jpeg=future_wrist_image_jpeg,
+        )
+
+        self._teacher_on_demos_cache[episode_idx] = sidecar
+        self._teacher_on_demos_cache.move_to_end(episode_idx)
+        while len(self._teacher_on_demos_cache) > self._teacher_on_demos_cache_size:
+            self._teacher_on_demos_cache.popitem(last=False)
+        return sidecar
+
     def __len__(self):
         """Returns the total number of samples in the dataset."""
         # Return pre-calculated epoch length (which already accounts for suite balancing if enabled)
@@ -567,6 +700,14 @@ class LIBERODataset(Dataset):
         if sample_type == "demo":
             # Get demonstration sample
             global_step_idx = idx % self.num_steps
+            # Full-coverage teacher_on_demos mode (see teacher_on_demos_num_samples' docstring):
+            # idx ranges over [0, num_steps * K), so floor-division recovers which of the K
+            # samples this particular idx enumerates -- deterministic, not the random draw below.
+            teacher_on_demos_k_enum = (
+                idx // self.num_steps
+                if (self.teacher_on_demos_dir and self.teacher_on_demos_num_samples > 1)
+                else None
+            )
             # Using global step index, get episode index and relative step index within that episode
             episode_idx, relative_step_idx = self._step_to_episode_map[global_step_idx]
             episode_metadata = None
@@ -634,6 +775,40 @@ class LIBERODataset(Dataset):
                 decompressed_images[frame_idx] = episode_data["images"][frame_idx]
                 decompressed_wrist_images[frame_idx] = episode_data["wrist_images"][frame_idx]
 
+        # teacher_on_demos: swap the four joint denoising targets (action chunk, future proprio,
+        # value, future primary/wrist images) for the teacher's prediction for this (episode,
+        # timestep). Everything else -- current obs, blanks, latent indices, masks, t5 -- is
+        # untouched. Only applies to demo samples (this path is demo-only when the kwarg is set).
+        use_teacher_on_demos = bool(self.teacher_on_demos_dir) and sample_type == "demo"
+        teacher_on_demos = self._load_teacher_on_demos_sidecar(episode_idx) if use_teacher_on_demos else None
+        # One of the K independent teacher samples for this state -- the SAME k across every field
+        # below, since one k is one coherent teacher generation. Full-coverage mode
+        # (teacher_on_demos_num_samples > 1): teacher_on_demos_k_enum, set above, deterministically
+        # enumerates every k exactly once per epoch. Otherwise: picked fresh at random each call,
+        # so different epochs (or DataLoader workers) see different draws over training.
+        if teacher_on_demos is not None:
+            K = teacher_on_demos["action_chunks"].shape[1]
+            if teacher_on_demos_k_enum is not None:
+                assert teacher_on_demos_k_enum < K, (
+                    f"teacher_on_demos_num_samples={self.teacher_on_demos_num_samples} but sidecar for "
+                    f"episode {episode_idx} only has K={K} samples per state"
+                )
+                teacher_on_demos_k = teacher_on_demos_k_enum
+            else:
+                teacher_on_demos_k = random.randrange(K)
+        else:
+            teacher_on_demos_k = None
+        if teacher_on_demos is not None and future_frame_idx != relative_step_idx:
+            # future_frame_idx == relative_step_idx only at the last step of an episode: keep the
+            # real current frame as the "future" image there (substituting would corrupt the
+            # current-obs slot, which shares this dict key), but still apply the non-image targets.
+            decompressed_images[future_frame_idx] = decode_single_jpeg_frame(
+                teacher_on_demos["future_image_jpeg"][relative_step_idx, teacher_on_demos_k]
+            )
+            decompressed_wrist_images[future_frame_idx] = decode_single_jpeg_frame(
+                teacher_on_demos["future_wrist_image_jpeg"][relative_step_idx, teacher_on_demos_k]
+            )
+
         # Initialize list to store all images
         image_list = []
         current_sequence_idx = 0  # Used to track which sequence of images we are on
@@ -684,6 +859,10 @@ class LIBERODataset(Dataset):
         # Add future proprio
         if self.use_proprio:
             future_proprio = episode_data["proprio"][future_frame_idx]
+            if teacher_on_demos is not None:
+                future_proprio = teacher_on_demos["future_proprio"][relative_step_idx, teacher_on_demos_k].astype(
+                    np.float32
+                )
             # Not using proprio image; proprio values will be injected into latent diffusion sequence later
             # For now just add blank image
             blank_image = np.zeros_like(decompressed_images[relative_step_idx])
@@ -716,6 +895,15 @@ class LIBERODataset(Dataset):
             value_latent_idx = current_sequence_idx
             current_sequence_idx += 1
 
+        # Stack images and preprocess. teacher_on_demos future frames come from the teacher's VAE
+        # decode at model resolution (final_image_size), while the real demo frames are at their
+        # on-disk resolution -- resize every slot to final_image_size before concatenating so they
+        # stack. Real frames get exactly the 256->224 they'd otherwise get inside preprocess_image
+        # (resize_images is deterministic and no-ops the second call); teacher frames are already
+        # at final_image_size and pass through untouched. No-op for the baseline path.
+        if teacher_on_demos is not None:
+            image_list = [resize_images(im, self.final_image_size) for im in image_list]
+
         # Stack images and preprocess
         images = np.concatenate(image_list, axis=0)
         images = preprocess_image(
@@ -733,8 +921,14 @@ class LIBERODataset(Dataset):
             chunk_size=self.chunk_size,
             num_steps=episode_data["num_steps"],
         )
+        if teacher_on_demos is not None:
+            # The teacher always emits a full (chunk_size, action_dim) chunk -- no tail padding.
+            action_chunk = teacher_on_demos["action_chunks"][relative_step_idx, teacher_on_demos_k].astype(
+                np.float32
+            )
 
-        # Return the next action chunk as well
+        # Return the next action chunk as well (base loss never consumes next_action_chunk /
+        # next_value_function_return -- left as the real demo values on the teacher_on_demos path).
         # Calculate how many actions we can get from the current index
         next_relative_step_idx = min(relative_step_idx + self.chunk_size, episode_data["num_steps"] - 1)
         next_action_chunk = get_action_chunk_with_padding(
@@ -751,6 +945,8 @@ class LIBERODataset(Dataset):
                 value_function_return = episode_metadata["returns"][return_timestep]
             else:
                 value_function_return = episode_data["returns"][return_timestep]
+            if teacher_on_demos is not None:
+                value_function_return = float(teacher_on_demos["value"][relative_step_idx, teacher_on_demos_k])
         else:
             value_function_return = float("-100")  # Just a placeholder
 
