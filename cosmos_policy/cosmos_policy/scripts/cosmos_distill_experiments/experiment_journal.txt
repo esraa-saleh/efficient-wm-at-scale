@@ -4652,3 +4652,68 @@ adaptive x-scale): https://claude.ai/code/artifact/0dee1752-384e-4e48-880d-b2b6e
 Current state: no jobs queued/running. Confound settled. Next unchanged: full 10-task
 libero_object K=5 head-to-head (build 10 K=5 sidecars, teacher_on_demos_500m_train + _eval vs
 baseline_500m_train 765180), then the 1b pair.
+
+--------------------------------------------------------------------------------
+2026-09-08  Codebase prepped for the 10-task K=5 head-to-head (config only, nothing launched)
+--------------------------------------------------------------------------------
+Wired the build/train/eval configs for: build one job per task -> train one model on all 10 tasks
+-> eval each checkpoint as the mean over all 10 tasks (3 rollouts/task). No code changes -- all
+existing machinery, just conf/ edits + one staged file. All dry-run validated (submit.submit=false,
+sbatch + params.yaml inspected); nothing submitted.
+
+BUILD -- per-task shards (git):
+  - conf/runs/datasets/build_teacher_on_demos.yaml: num_teacher_samples 1->5, time_limit
+    7:59->22:00 (793246 was 13:45; worst-case task ~16h; 22h routes to Vulcan b3, 24h cap),
+    stale comments refreshed. This stays the "all tasks in one job" config (impractical at K=5,
+    ~5-6 days) -- kept as documentation.
+  - conf/runs/datasets/build_teacher_on_demos_<task>.yaml x9 (alphabet_soup, bbq_sauce, butter,
+    chocolate_pudding, cream_cheese, milk, orange_juice, salad_dressing, tomato_sauce -- ketchup
+    already built, job 793246). Full standalone copies (repo pattern -- no Hydra defaults
+    composition, see sweep.py:45), differ from the base only in job_name + task_names. Every one
+    writes its own *.teacher_on_demos.hdf5 into the SHARED
+    libero_object_regen__teacher_on_demos/ dir.
+  - conf/config.yaml: +9 `runs/datasets@runs.build_teacher_on_demos_<task>` defaults lines.
+  Launch all 9 together (ketchup skipped -- complete=True):
+    submit_sweep launch.submit=true \
+      launch.only=[build_teacher_on_demos_alphabet_soup,...,build_teacher_on_demos_tomato_sauce]
+  Verified milk.sbatch: --gres=gpu:l40s:1 --time=22:00:00 --account=aip-courvill, no --partition,
+  --task_names milk, params.yaml num_teacher_samples: 5.
+
+TRAIN -- one job, all 10 tasks (git):
+  conf/runs/teacher_on_demos_500m_train.yaml (+ _1b_): added the two pieces the ketchup runs
+  passed as CLI overrides, now baked in --
+    - teacher_on_demos_num_samples: 5  (full-coverage; epoch = num_steps*5; MUST match the build's
+      num_teacher_samples or you get 791542's peaks-then-collapses, not the K=5 hold)
+    - dataset_stats_override_path: <staged teacher stats>  (sidecar targets are stored verbatim in
+      the teacher's normalization)
+  No task_names filter -> LIBERODataset loads all 10 task HDF5s and pulls each demo's teacher
+  targets from the mirrored sidecar path; one pooled dataset, one model. REQUIRES all 10 sidecars
+  present + complete=True before launch (a missing one -> KeyError mid-epoch). Comment rewritten
+  (no longer "byte-for-byte baseline" -- 3 deliberate deltas now).
+  Verified torchrun cmd: dataset_stats_override_path + teacher_on_demos_num_samples=5 injected,
+  no dataset.task_names.
+
+EVAL -- mean over tasks, 3 runs/task (git):
+  conf/runs/teacher_on_demos_500m_train_eval.yaml (+ _1b_): ONLY change is
+  eval_dataset_stats_path local libero_object_regen/dataset_statistics.json -> the TEACHER's
+  staged stats (student predicts in teacher-norm; sim needs the same file to un-normalize).
+  The scoring was already what we want: no eval_task_keyword -> full suite, every checkpoint
+  scored on all 10 tasks x eval_num_trials_per_task(3); periodic_libero_eval_static's
+  eval_results.csv success_rate = mean over tasks (equal trials); run_libero_eval also writes a
+  per-task breakdown CSV (<local_log_dir>/<run_id>_results.csv) per checkpoint. checkpoint_format
+  dcp (torchrun/DistributedCheckpointer, like baseline_500m).
+  Verified eval cmd: --dataset_stats_path <teacher stats>, --num_trials_per_task 3, no
+  --task_keyword, --checkpoint_format dcp.
+
+STAGED (not git -- data):
+  cp <hf_cache>/models--nvidia--Cosmos-Policy-LIBERO-Predict2-2B/snapshots/cb689.../libero_dataset_statistics.json
+     -> $COSMOS_POLICY_STORAGE/LIBERO-Cosmos-Policy/success_only/teacher_libero_dataset_statistics.json
+  (sha256 5b119a98...; stable path so the yamls don't carry the HF snapshot hash. Identical
+  content to what the K=1/K=5 ketchup runs used.)
+
+FLAG: teacher_on_demos_1b_train.yaml time_limit is "12:00:00" (pre-existing) -- almost certainly
+too short for 30k iters of a 1B model; fix before launching the 1b pair. 500m runs first so not
+blocking.
+
+The flow now: launch 9 build jobs -> wait for 10x complete=True -> one teacher_on_demos_500m_train
++ _eval -> compare mean-over-tasks success curve to baseline_500m_train (765180) -> 1b pair.
