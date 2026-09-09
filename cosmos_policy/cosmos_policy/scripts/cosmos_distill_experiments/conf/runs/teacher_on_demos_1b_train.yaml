@@ -1,8 +1,9 @@
-# Byte-for-byte baseline_1b_train.yaml (same experiment, size, data states, torchrun/Trainer path,
-# joint EDM objective, teacher-derived DCP init, iteration count, eval) EXCEPT the four joint
-# denoising targets come from the teacher's own generation for each demo state -- via the
-# libero_object_regen__teacher_on_demos sidecar (build it first with build_teacher_on_demos.yaml).
-# Head-to-head partner of baseline_1b_train. See kd/TEACHER_ON_DEMOS_PLAN.md.
+# baseline_1b_train.yaml with the same three deliberate teacher_on_demos deltas as
+# teacher_on_demos_500m_train.yaml (see it): (1) teacher_on_demos_dir -- the four joint denoising
+# targets come from the teacher's own generation per demo state; (2) teacher_on_demos_num_samples: 5
+# -- full-coverage over the K=5 sidecar; (3) dataset_stats_override_path -- train in the teacher's
+# normalization. Nothing in the training/loss path changes. Trains on all 10 libero_object tasks
+# at once. Head-to-head partner of baseline_1b_train. See kd/TEACHER_ON_DEMOS_PLAN.md.
 job_name: cosmos_teacher_on_demos_1b_train
 
 data_root: ${oc.env:COSMOS_POLICY_STORAGE,/project/rrg-gberseth/esraa1/cosmos_policy_storage}/LIBERO-Cosmos-Policy/success_only
@@ -18,6 +19,12 @@ extra_overrides:
 # The teacher-target sidecar (built by build_teacher_on_demos.yaml). baseline_1b_train has no
 # staging, so this is passed by absolute path (no $SLURM_TMPDIR copy).
 teacher_on_demos_dir: ${oc.env:COSMOS_POLICY_STORAGE,/project/rrg-gberseth/esraa1/cosmos_policy_storage}/LIBERO-Cosmos-Policy/success_only/libero_object_regen__teacher_on_demos
+# Full-coverage over the K=5 sidecar (epoch = num_steps * 5); MUST match the build's
+# num_teacher_samples (build_teacher_on_demos.yaml = 5).
+teacher_on_demos_num_samples: 5
+# Train in the teacher checkpoint's own normalization (staged copy) -- sidecar targets are stored
+# verbatim in it; the eval companion's eval_dataset_stats_path is the same file.
+dataset_stats_override_path: ${oc.env:COSMOS_POLICY_STORAGE,/project/rrg-gberseth/esraa1/cosmos_policy_storage}/LIBERO-Cosmos-Policy/success_only/teacher_libero_dataset_statistics.json
 # Distinct from baseline_1b_train's default 12341 -- avoids torchrun rendezvous EADDRINUSE if this
 # co-runs on the same physical node.
 master_port: 12346

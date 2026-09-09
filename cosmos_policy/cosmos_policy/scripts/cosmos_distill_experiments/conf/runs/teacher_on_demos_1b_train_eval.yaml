@@ -1,7 +1,10 @@
-# Continuous full-suite eval companion to teacher_on_demos_1b_train -- byte-for-byte
-# baseline_1b_train_eval.yaml (closed-loop LIBERO sim, no teacher targets involved) with only
-# job_name / monitored_job_name changed so its success-rate curve is directly comparable to
-# baseline_1b_train's.
+# Continuous full-suite eval companion to teacher_on_demos_1b_train -- baseline_1b_train_eval.yaml
+# with job_name / monitored_job_name changed AND eval_dataset_stats_path pointed at the teacher's
+# stats file (the student trains + must be un-normalized in the teacher's convention -- see
+# teacher_on_demos_500m_train_eval.yaml for the full rationale).
+# SCORING: full suite, no eval_task_keyword -- every checkpoint scored on all 10 libero_object
+# tasks x 3 trials; eval_results.csv success_rate = mean over tasks; run_libero_eval.py also writes
+# a per-task breakdown CSV per checkpoint.
 job_name: cosmos_distill_experiments_teacher_on_demos_1b_train_eval
 run_type: kd_static_eval
 gpus: 1
@@ -17,7 +20,8 @@ eval_num_trials_per_task: 3
 eval_checkpoint_format: dcp
 
 eval_inference_experiment: cosmos_kd_student_1b_libero__inference_only
-eval_dataset_stats_path: ${oc.env:COSMOS_POLICY_STORAGE,/project/rrg-gberseth/esraa1/cosmos_policy_storage}/LIBERO-Cosmos-Policy/success_only/libero_object_regen/dataset_statistics.json
+# TEACHER's stats (staged copy) -- must equal teacher_on_demos_1b_train.dataset_stats_override_path.
+eval_dataset_stats_path: ${oc.env:COSMOS_POLICY_STORAGE,/project/rrg-gberseth/esraa1/cosmos_policy_storage}/LIBERO-Cosmos-Policy/success_only/teacher_libero_dataset_statistics.json
 eval_t5_text_embeddings_path: ${oc.env:COSMOS_POLICY_STORAGE,/project/rrg-gberseth/esraa1/cosmos_policy_storage}/LIBERO-Cosmos-Policy/success_only/t5_embeddings.pkl
 
 time_limit: "23:59:00"

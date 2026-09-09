@@ -1,0 +1,39 @@
+# Per-task shard of the teacher_on_demos sidecar build -- builds ONLY the
+# pick_up_the_milk... libero_object task. Identical to build_teacher_on_demos.yaml
+# (see it for all field rationale) except job_name + task_names; writes its one sidecar file into
+# the SAME shared teacher_on_demos_build_dir as every other task's job. K=5 (num_teacher_samples),
+# 5 denoising steps, batch 8 -- the settled recipe (experiment_journal.txt 2026-09-08).
+#
+# Launch this one alongside the other 8 unbuilt tasks (ketchup is already done):
+#   submit_sweep launch.submit=true launch.only=[build_teacher_on_demos_milk,...]
+# Per-episode + per-file resumable: a timeout/preempt costs only the in-flight episode; rerun the
+# same launch.only name to continue.
+job_name: cosmos_distill_experiments_build_teacher_on_demos_milk
+run_type: build_teacher_on_demos
+gpus: 1
+
+data_root: ${oc.env:COSMOS_POLICY_STORAGE,/project/rrg-gberseth/esraa1/cosmos_policy_storage}/LIBERO-Cosmos-Policy/success_only
+output_root: ${oc.env:COSMOS_POLICY_STORAGE,/project/rrg-gberseth/esraa1/cosmos_policy_storage}/cosmos_dit_wm_output
+
+suites: [libero_object_regen]
+rollout_data_dir: ""
+# Case-insensitive substring match against source HDF5 filenames -- one file, this task only.
+task_names: [milk]
+
+batch_size: 8
+build_num_workers: 8
+num_denoising_steps: 5
+num_teacher_samples: 5
+device: cuda:0
+seed: 0
+
+# Shared with every other task's build job -- all 10 sidecar files live here side by side, and a
+# teacher_on_demos_* training run points its teacher_on_demos_dir at exactly this path.
+teacher_on_demos_build_dir: ${oc.env:COSMOS_POLICY_STORAGE,/project/rrg-gberseth/esraa1/cosmos_policy_storage}/LIBERO-Cosmos-Policy/success_only/libero_object_regen__teacher_on_demos
+
+# K=5 ketchup (job 793246) was 13h45m; worst-case task ~16h. 22h -> Vulcan b3 tier (24h cap).
+time_limit: "22:00:00"
+mem: "80G"
+cpus: 8
+account: ${oc.env:COSMOS_POLICY_ACCOUNT,rrg-gberseth}
+filename: build_teacher_on_demos_milk.sbatch

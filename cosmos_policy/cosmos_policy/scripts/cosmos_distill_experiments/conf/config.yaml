@@ -72,6 +72,16 @@ defaults:
   - runs/datasets@runs.build_teacher_native_distill_dataset_smoketest: build_teacher_native_distill_dataset_smoketest
   - runs/datasets@runs.build_teacher_on_demos: build_teacher_on_demos
   - runs/datasets@runs.build_teacher_on_demos_smoketest: build_teacher_on_demos_smoketest
+  # per-task shards of the teacher_on_demos build (ketchup already built) -- launch these together
+  - runs/datasets@runs.build_teacher_on_demos_alphabet_soup: build_teacher_on_demos_alphabet_soup
+  - runs/datasets@runs.build_teacher_on_demos_bbq_sauce: build_teacher_on_demos_bbq_sauce
+  - runs/datasets@runs.build_teacher_on_demos_butter: build_teacher_on_demos_butter
+  - runs/datasets@runs.build_teacher_on_demos_chocolate_pudding: build_teacher_on_demos_chocolate_pudding
+  - runs/datasets@runs.build_teacher_on_demos_cream_cheese: build_teacher_on_demos_cream_cheese
+  - runs/datasets@runs.build_teacher_on_demos_milk: build_teacher_on_demos_milk
+  - runs/datasets@runs.build_teacher_on_demos_orange_juice: build_teacher_on_demos_orange_juice
+  - runs/datasets@runs.build_teacher_on_demos_salad_dressing: build_teacher_on_demos_salad_dressing
+  - runs/datasets@runs.build_teacher_on_demos_tomato_sauce: build_teacher_on_demos_tomato_sauce
   - runs@runs.teacher_on_demos_500m_train: teacher_on_demos_500m_train
   - runs@runs.teacher_on_demos_500m_train_eval: teacher_on_demos_500m_train_eval
   - runs@runs.teacher_on_demos_1b_train: teacher_on_demos_1b_train

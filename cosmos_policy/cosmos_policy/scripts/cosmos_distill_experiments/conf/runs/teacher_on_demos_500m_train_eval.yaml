@@ -1,7 +1,14 @@
-# Continuous full-suite eval companion to teacher_on_demos_500m_train -- byte-for-byte
-# baseline_500m_train_eval.yaml (closed-loop LIBERO sim, no teacher targets involved: eval just
-# rolls out the trained student) with only job_name / monitored_job_name changed so its
-# success-rate curve is directly comparable to baseline_500m_train's.
+# Continuous full-suite eval companion to teacher_on_demos_500m_train -- baseline_500m_train_eval.yaml
+# (closed-loop LIBERO sim: eval just rolls out the trained student, no teacher targets involved)
+# with job_name / monitored_job_name changed AND eval_dataset_stats_path pointed at the teacher's
+# stats file. The student was trained in the teacher's normalization convention
+# (teacher_on_demos_500m_train.dataset_stats_override_path), so its predicted actions must be
+# un-normalized with the same file or the sim gets wrong commands.
+#
+# SCORING: no eval_task_keyword -> full suite. Every checkpoint is scored on all 10 libero_object
+# tasks x eval_num_trials_per_task (3) rollouts. eval_results.csv's success_rate is the mean over
+# tasks (equal trials/task); run_libero_eval.py also drops a per-task breakdown CSV
+# (<local_log_dir>/<run_id>_results.csv) per checkpoint. Directly comparable to baseline_500m_train's.
 job_name: cosmos_distill_experiments_teacher_on_demos_500m_train_eval
 run_type: kd_static_eval
 gpus: 1
@@ -17,7 +24,10 @@ eval_num_trials_per_task: 3
 eval_checkpoint_format: dcp
 
 eval_inference_experiment: cosmos_kd_student_500m_libero__inference_only
-eval_dataset_stats_path: ${oc.env:COSMOS_POLICY_STORAGE,/project/rrg-gberseth/esraa1/cosmos_policy_storage}/LIBERO-Cosmos-Policy/success_only/libero_object_regen/dataset_statistics.json
+# The TEACHER's stats (staged copy of nvidia/Cosmos-Policy-LIBERO-Predict2-2B's
+# libero_dataset_statistics.json) -- NOT the local libero_object_regen/dataset_statistics.json.
+# Must equal teacher_on_demos_500m_train.dataset_stats_override_path.
+eval_dataset_stats_path: ${oc.env:COSMOS_POLICY_STORAGE,/project/rrg-gberseth/esraa1/cosmos_policy_storage}/LIBERO-Cosmos-Policy/success_only/teacher_libero_dataset_statistics.json
 eval_t5_text_embeddings_path: ${oc.env:COSMOS_POLICY_STORAGE,/project/rrg-gberseth/esraa1/cosmos_policy_storage}/LIBERO-Cosmos-Policy/success_only/t5_embeddings.pkl
 
 time_limit: "47:00:00"

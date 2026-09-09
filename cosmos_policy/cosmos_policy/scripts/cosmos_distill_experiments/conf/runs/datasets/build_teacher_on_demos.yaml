@@ -6,12 +6,14 @@
 # on the plain torchrun path -- NOT a kd_* run type, and NOT the ShardWriter KD format the
 # build_*_distill_dataset builds write.
 #
-# Not a training run: no checkpoint. IS resumable at source-file granularity (a sidecar marked
-# complete=True is skipped) -- so per-task sharding is the recommended way to split the
-# ~65k-timestep libero_object build into ~2-5h jobs:
-#   submit_sweep launch.only=[build_teacher_on_demos] launch.submit=true \
-#     runs.build_teacher_on_demos.task_names=[ketchup]
-# Omitting task_names builds every task in one (long) job; file-level resume covers requeues.
+# Not a training run: no checkpoint. Resumable at source-file granularity (a sidecar marked
+# complete=True is skipped) AND per-episode. This is the ALL-TASKS-IN-ONE-JOB config -- ~65k
+# timesteps at K=5 is ~5-6 days, so in practice the suite is built per task: one job each from
+# conf/runs/datasets/build_teacher_on_demos_<task>.yaml (alphabet_soup, bbq_sauce, butter,
+# chocolate_pudding, cream_cheese, ketchup, milk, orange_juice, salad_dressing, tomato_sauce),
+# every one writing its own sidecar file into the shared teacher_on_demos_build_dir below. Launch
+# them together:
+#   submit_sweep launch.submit=true launch.only=[build_teacher_on_demos_alphabet_soup,build_teacher_on_demos_bbq_sauce,...]
 job_name: cosmos_distill_experiments_build_teacher_on_demos
 run_type: build_teacher_on_demos
 gpus: 1
@@ -38,6 +40,11 @@ build_num_workers: 8
 # generate_teacher_native_targets uses the same one-joint-call structure, so 5 here == eval.
 # (The 1-step build is archived at libero_object_regen__teacher_on_demos__1denoisestep/.)
 num_denoising_steps: 5
+# K independent teacher samples per (episode, timestep), stored unaveraged. K=5 is the settled
+# recipe -- the K=1 -> K=5 confound was resolved 2026-09-08 (experiment_journal.txt): K=1 stays
+# intermittent even at 6000 iters, K=5 holds ~100%. A teacher_on_demos_* training run must set
+# teacher_on_demos_num_samples to this same value for full-coverage.
+num_teacher_samples: 5
 device: cuda:0
 seed: 0
 
@@ -45,12 +52,13 @@ seed: 0
 # data_dir recursively and would otherwise ingest the sidecars as data).
 teacher_on_demos_build_dir: ${oc.env:COSMOS_POLICY_STORAGE,/project/rrg-gberseth/esraa1/cosmos_policy_storage}/LIBERO-Cosmos-Policy/success_only/libero_object_regen__teacher_on_demos
 
-# Per-task default. One libero_object task (~42 successful episodes, ~6k timesteps) was ~2.5h wall
-# at num_denoising_steps=1; at 5 the per-timestep teacher denoise is ~5x, so budget ~6-8h.
-# The build writes each episode group as it finishes (episode_complete=True) and resumes per
-# episode, so a timeout only costs the in-flight episode. For an un-sharded all-10-tasks run,
-# override to ~24:00:00 or shard by task.
-time_limit: "7:59:00"
+# Per-task budget. K=5 ketchup (job 793246, ~42 episodes / ~6.3k timesteps) was 13h45m wall;
+# worst-case task (~50 episodes) ~16h. 22h routes to Vulcan's b3 tier (24h cap, 142 nodes) with
+# margin. The build writes each episode group as it finishes (episode_complete=True) and resumes
+# per episode, so a timeout only costs the in-flight episode -- a rerun picks up where it stopped.
+# Per-task sharding is the intended way to run the full suite: one job per task
+# (conf/runs/datasets/build_teacher_on_demos_<task>.yaml), all writing into the one build dir.
+time_limit: "22:00:00"
 mem: "80G"
 cpus: 8
 account: ${oc.env:COSMOS_POLICY_ACCOUNT,rrg-gberseth}
