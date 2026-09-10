@@ -4819,3 +4819,35 @@ https://claude.ai/code/artifact/05c6b275-0912-4660-aec4-68bde6c5ada0 -- success-
 teacher-on-demos K=5 vs baseline_500m_train_v2 (765180), status strip, the 4 deltas, ketchup
 precedent as the bar to clear. Static snapshot (train_loss.csv / eval_results.csv pulled at
 2026-09-10T02:18Z) -- republish to the same URL as eval fills in past iter 800.
+
+--------------------------------------------------------------------------------
+2026-09-10  Action histogram for the __teachernorm_k1 sidecar (791542's dataset)
+--------------------------------------------------------------------------------
+analyze_teacher_on_demos_actions.py on the sidecar the 791542/791543 ketchup run trained on
+(libero_object_regen__teacher_on_demos__teachernorm_k1/, job 790396: 5 denoise steps,
+norm_convention=teacher_checkpoint, K=1). CPU job 864844, ~1s. JSON:
+/scratch/esraa1/tod_actdist_teachernorm_k1.json.
+
+Per-dim (teacher action_chunks in teacher-norm vs demo in local-norm, 6341 ketchup steps):
+  dim   demo|.|  teach|.|  atten  corr   rmse
+  x     0.172    0.171     0.99   +0.98  0.045
+  y     0.424    0.397     0.94   +1.00  0.054
+  z     0.329    0.326     0.99   +1.00  0.044
+  roll  0.129    0.152     1.17   +0.96  0.113
+  pitch 0.141    0.088     0.62   +0.97  0.108
+  yaw   0.265    0.063     0.24   +0.97  0.294
+  grip  1.000    1.000     1.00   +0.99  0.113
+  overall chunk RMSE 0.137 (was 0.193 for the pre-conditioning-fix __5step_teachernorm build);
+  demo chunk RMS 0.494.
+
+Finding: feeding the teacher its OWN proprio convention (the 790396 delta vs 783368) snapped
+translation onto the demo -- x atten 1.14x -> 0.99x, overall RMSE 0.19 -> 0.14. Yaw still reads
+0.24x here, but that overlay is teacher-norm-vs-local-norm (rotation ranges 30-45% wider in the
+teacher's file) -- the 2026-09-04 unit-converted re-analysis put the teacher's PHYSICAL yaw ~=
+the demo's. Genuine residual = SNR: yaw spans ~+-0.06 in teacher-norm units, a hard EDM target,
+which is why K=1 stayed intermittent and K=5 + longer schedule were needed.
+
+Artifact: "Right Conditioning, Same Yaw"
+  https://claude.ai/code/artifact/a65f9189-f064-4136-9a23-4c7d66c57f41
+  Completes the histogram set: 1-step teacher-norm (22368196) / 5-step teacher-norm pre-
+  conditioning-fix (4d2a81aa) / 5-step teacher-norm + correct conditioning = THIS.
