@@ -4804,11 +4804,10 @@ after. periodic_libero_eval_static seeds `evaluated` from eval_results.csv on st
 existing rows are kept, not redone. scancel 857665 -> resubmit -> 858512 (PENDING, Priority).
 No lost work; train job untouched.
 
-OPEN ITEM (not acted on -- needs train restart, user's call): checkpoint_save_iter=200 with no
-pruning = 5.3 GB/ckpt x 315 = ~1.67 TB for this one run (project at 1.29/7.68 TB now; fits but
-big, and the 1b run would be worse). Options: (a) accept + prune the fine grid after the run,
-(b) restart 857664 with checkpoint_save_iter=1000 (auto-resumes from iter_000003600, ~0 lost
-compute; orphans the 19 existing ckpts / 97 GB). Left running as-is for now.
+DISK (decided: option a): checkpoint_save_iter=200 with no pruning = 5.3 GB/ckpt x 315 = ~1.67 TB
+for this one run (project at 1.29/7.68 TB now; fits but big). Decision: leave 857664 as-is, prune
+the fine checkpoint grid after the run -- keep the ones 858512 actually scored (every 1000) plus
+the final, delete the rest. TODO once train + eval finish.
 
   857664  cosmos_teacher_on_demos_500m_train                          RUNNING  rack12-10
   858512  cosmos_distill_experiments_teacher_on_demos_500m_train_eval  PENDING  (--eval_every_n_iters 1000)
