@@ -4851,3 +4851,34 @@ Artifact: "Right Conditioning, Same Yaw"
   https://claude.ai/code/artifact/a65f9189-f064-4136-9a23-4c7d66c57f41
   Completes the histogram set: 1-step teacher-norm (22368196) / 5-step teacher-norm pre-
   conditioning-fix (4d2a81aa) / 5-step teacher-norm + correct conditioning = THIS.
+
+--------------------------------------------------------------------------------
+2026-09-10  CORRECTION: __teachernorm_k1 action histogram re-run in the teacher frame
+--------------------------------------------------------------------------------
+The first pass (job 864844, artifact a65f9189 v1) normalized the demo with the LOCAL stats while
+the sidecar's action_chunks are teacher-norm -- an apples-to-oranges overlay that run 791542
+never used (it set dataset_stats_override_path / --dataset_stats_path to the TEACHER's stats for
+train AND eval). Re-ran with the demo also normalized in the teacher's convention (job 864859,
+staged /scratch/esraa1/actdist_k1_teachernorm_frame/ with teacher stats symlinked as
+dataset_statistics.json).
+
+Teacher-frame per-dim (6341 ketchup steps, both series teacher-norm):
+  dim   demo|.|  teach|.|  atten  corr   rmse
+  x     0.172    0.171     1.00   +0.98  0.038
+  y     0.402    0.397     0.99   +1.00  0.039
+  z     0.329    0.326     0.99   +1.00  0.044
+  roll  0.156    0.152     0.97   +0.96  0.025
+  pitch 0.088    0.088     1.00   +0.97  0.032
+  yaw   0.066    0.063     0.96   +0.97  0.022
+  grip  1.000    1.000     1.00   +0.99  0.113
+  overall chunk RMSE 0.053 (11% of demo chunk RMS 0.478).
+
+=> In the frame 791542 actually trained/evaled in, the teacher targets track the demo on every
+dimension. The "yaw 0.24x collapse" was entirely the local-vs-teacher stats mismatch (rotation
+ranges 30-45% wider in the teacher file), confirming the 2026-09-04 unit-conversion re-analysis.
+Real residual = SNR: yaw ~+-0.06 in teacher-norm units sits below the EDM noise floor -> hard K=1
+target -> why K=5 + longer schedule were needed.
+
+Artifact a65f9189 rewritten: "Yaw Was Never Collapsed" (was "Right Conditioning, Same Yaw"),
+teacher-frame histograms + a table contrasting the two frames.
+JSON: /scratch/esraa1/tod_actdist_teachernorm_k1__teacherframe.json
