@@ -4811,3 +4811,11 @@ the final, delete the rest. TODO once train + eval finish.
 
   857664  cosmos_teacher_on_demos_500m_train                          RUNNING  rack12-10
   858512  cosmos_distill_experiments_teacher_on_demos_500m_train_eval  PENDING  (--eval_every_n_iters 1000)
+
+--------------------------------------------------------------------------------
+2026-09-09  Metrics artifact for 857664/858512, snapshot iter 4147/63000
+--------------------------------------------------------------------------------
+https://claude.ai/code/artifact/05c6b275-0912-4660-aec4-68bde6c5ada0 -- success-rate + loss curves,
+teacher-on-demos K=5 vs baseline_500m_train_v2 (765180), status strip, the 4 deltas, ketchup
+precedent as the bar to clear. Static snapshot (train_loss.csv / eval_results.csv pulled at
+2026-09-10T02:18Z) -- republish to the same URL as eval fills in past iter 800.
