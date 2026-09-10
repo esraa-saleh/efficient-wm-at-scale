@@ -4781,3 +4781,34 @@ re-check 63000 ~= 1.5 epochs against it (N above is estimated from build logs). 
 compare mean-over-tasks success curve vs baseline_500m_train (cosmos_kd_baseline_500m_train_v2
 765180, at iter 25200). Then the 1b pair -- FIX teacher_on_demos_1b_train.yaml time_limit
 "12:00:00" first (still too short).
+
+--------------------------------------------------------------------------------
+2026-09-09  857664/857665 running; eval re-launched with --eval_every_n_iters 1000
+--------------------------------------------------------------------------------
+857664 train: RUNNING on rack12-10 from 17:35, 2.27 s/iter (63000 iters -> ~40h, ETA
+~2026-09-11 09:xx). Verified healthy: both "Staged ... to /tmp" lines, "Loaded checkpoint from
+.../student_init_500m_dcp in iteration 0" (init loaded, not from scratch), loss ~0.24-0.34 at
+iter ~3800 (K=5 ketchup was 0.164 at 6000, so on track). checkpoint_save_iter=200.
+
+857665 eval: was scoring EVERY checkpoint sequentially -- 10 tasks x 3 trials ~= 32 min each.
+Train writes a checkpoint every ~7.6 min, so eval fell progressively behind (train iter 3790 vs
+eval iter 800 after 2.5h). At 315 checkpoints / 60h walltime it would only have covered ~the
+first third of training -- missing exactly the late-run window where "does K=5 10-task sustain
+success like ketchup did" gets answered. eval_results.csv had 200/400/600/800 all 0.0 (expected
+this early; ketchup K=5 was also 0/3 through iter 1000).
+
+FIX: conf/runs/teacher_on_demos_500m_train_eval.yaml += eval_every_n_iters: 1000 (RunConfig
+already supports it -> submit_sweep passes --eval_every_n_iters). 63 checkpoints, ~34h, eval
+throughput ~31 iter/min slightly > train ~26 iter/min so it tracks the run and finishes just
+after. periodic_libero_eval_static seeds `evaluated` from eval_results.csv on startup so the 4
+existing rows are kept, not redone. scancel 857665 -> resubmit -> 858512 (PENDING, Priority).
+No lost work; train job untouched.
+
+OPEN ITEM (not acted on -- needs train restart, user's call): checkpoint_save_iter=200 with no
+pruning = 5.3 GB/ckpt x 315 = ~1.67 TB for this one run (project at 1.29/7.68 TB now; fits but
+big, and the 1b run would be worse). Options: (a) accept + prune the fine grid after the run,
+(b) restart 857664 with checkpoint_save_iter=1000 (auto-resumes from iter_000003600, ~0 lost
+compute; orphans the 19 existing ckpts / 97 GB). Left running as-is for now.
+
+  857664  cosmos_teacher_on_demos_500m_train                          RUNNING  rack12-10
+  858512  cosmos_distill_experiments_teacher_on_demos_500m_train_eval  PENDING  (--eval_every_n_iters 1000)

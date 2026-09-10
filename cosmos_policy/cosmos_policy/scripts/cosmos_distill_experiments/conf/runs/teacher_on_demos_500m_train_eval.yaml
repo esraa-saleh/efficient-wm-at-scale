@@ -22,6 +22,15 @@ monitored_job_name: cosmos_teacher_on_demos_500m_train
 eval_task_suite_name: libero_object
 eval_num_trials_per_task: 3
 eval_checkpoint_format: dcp
+# One full-suite pass = 10 tasks x 3 trials ~= 32 min. The train job saves a checkpoint every 200
+# iters (checkpoint_save_iter), so at 63000 iters there are 315 of them -- ~168h of eval work
+# against a 60h walltime, i.e. the default (score every checkpoint) would only ever cover the first
+# ~third of training. Score every 1000 iters instead: 63 checkpoints, ~34h, eval throughput
+# (~31 iter/min) slightly outpaces training (~26 iter/min) so it tracks the run and finishes just
+# after it, covering the whole 0..63000 range. 63 points is plenty for the success curve.
+# periodic_libero_eval_static.py seeds `evaluated` from eval_results.csv on startup, so the
+# already-scored 200/400/600/800 rows are kept, not redone.
+eval_every_n_iters: 1000
 
 eval_inference_experiment: cosmos_kd_student_500m_libero__inference_only
 # The TEACHER's stats (staged copy of nvidia/Cosmos-Policy-LIBERO-Predict2-2B's
