@@ -4968,3 +4968,27 @@ Plan: bisect rather than launch all 6. Recommended first probe: 300m (job_name
 cosmos_teacher_on_demos_300m_train_1task_ketchup) -- if it holds like 500m did, go smaller
 (150m); if it collapses, go bigger (435m). NOT YET LAUNCHED -- waiting on user to pick the
 starting point / confirm launch.
+
+--------------------------------------------------------------------------------
+2026-09-13  Smallest-viable-student: promoted to the full 10-task recipe for 90m/225m/365m
+--------------------------------------------------------------------------------
+User clarified: match the 10-task head-to-head (857664/858512, max_iter=63000) exactly, not the
+cheap single-task ketchup probe (6000 iters) -- those are two different precedents ("7 blocks"
+was ambiguous between them). Built teacher_on_demos_{90m,225m,365m}_train(.yaml) + _eval.yaml,
+identical to teacher_on_demos_500m_train(_eval).yaml (max_iter=63000, batch_size=8, K=5,
+teacher-norm-throughout, all 10 libero_object tasks, no task_names filter) -- dry-run diffed
+against the 500m sbatch to confirm only size/port/paths differ. master_ports 12360/12361/12362.
+
+Deliberate delta: checkpoint_save_iter 200 -> 1000 (matching eval_every_n_iters, also 1000). The
+500m run saved 315 checkpoints (1.7TB, still unpruned) but eval only ever scored 67 -- fixed at
+the source for these three instead of repeating it. Estimated disk at ~5.3GB/ckpt-per-500M-params
+scaling: 90m ~59GB, 225m ~150GB, 365m ~242GB for 63 checkpoints each (~450GB total, vs ~2.25TB
+had checkpoint_save_iter stayed at 200).
+
+Registered in conf/config.yaml. All 6 dry-run clean. The single-task ketchup yaml pair for these
+3 sizes (built earlier this session) stays committed but unused for this path.
+
+NOT YET LAUNCHED -- ready for launch.submit=true on:
+  launch.only=[teacher_on_demos_90m_train,teacher_on_demos_90m_train_eval,
+               teacher_on_demos_225m_train,teacher_on_demos_225m_train_eval,
+               teacher_on_demos_365m_train,teacher_on_demos_365m_train_eval]
