@@ -4929,3 +4929,42 @@ OPEN ITEMS:
 
   857664  cosmos_teacher_on_demos_500m_train                          COMPLETED  (63000/63000)
   858512  cosmos_distill_experiments_teacher_on_demos_500m_train_eval  TIMEOUT (idle, all scored)
+
+--------------------------------------------------------------------------------
+2026-09-13  Smallest-viable-student search: sub-500m sizes scaffolded, not launched
+--------------------------------------------------------------------------------
+User wants new student sizes below 500M and to find the smallest one that still works.
+
+Real param counts (kd/student_sizes.py extended to num_blocks=1, run as job 911387 -- needs a
+GPU node even for the meta-device build, since MiniTrainDIT's import chain pulls in
+transformer_engine which needs a CUDA context to import; CPU-only fails at import, not at the
+count):
+  num_blocks  params
+  1           88.6M   <- architectural floor (fixed width/heads, depth-only reduction)
+  2           157.8M
+  3           227.0M
+  4           296.2M
+  5           365.4M
+  6           434.6M
+  7           503.8M  (existing "500m")
+
+kd/net_experiments.py STUDENT_SIZES += 435m(6) / 365m(5) / 300m(4) / 225m(3) / 150m(2) / 90m(1).
+This alone registers cosmos_kd_student_<size>_libero (+__inference_only) for all 6 via the
+existing bottom-of-file loop -- no other code change needed.
+
+kd_inits built for all 6 (job 911402, ~4.5 min total, CPU weight-copy on a GPU node):
+  student_init_<size>_dcp for 435m/365m/300m/225m/150m/90m. Layer maps: 435m=[0,5,11,16,22,27],
+  365m=[0,7,14,20,27], 300m=[0,9,18,27], 225m=[0,14,27], 150m=[0,27], 90m=[0] -- matches
+  student_sizes.py's predicted counts exactly.
+
+New yaml pair per size: teacher_on_demos_<size>_train_1task_ketchup(.yaml) + _eval.yaml --
+identical recipe to the proven 500m ketchup K=5 run (828271: held ~98% from iter 3000 on) except
+model size. Reuses the SAME shared K=5 sidecar dir (libero_object_regen__teacher_on_demos/,
+already has ketchup from job 793246) via task_names:[ketchup], so no new data build needed.
+max_iter=6000, time_limit=15:00:00 (500m K=5 ketchup's proven ceiling), unique master_ports
+12350-12355. Registered in conf/config.yaml. All 6 dry-run clean (submit_sweep, no launch).
+
+Plan: bisect rather than launch all 6. Recommended first probe: 300m (job_name
+cosmos_teacher_on_demos_300m_train_1task_ketchup) -- if it holds like 500m did, go smaller
+(150m); if it collapses, go bigger (435m). NOT YET LAUNCHED -- waiting on user to pick the
+starting point / confirm launch.
