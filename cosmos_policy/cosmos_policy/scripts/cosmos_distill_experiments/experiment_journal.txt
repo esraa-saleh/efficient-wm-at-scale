@@ -4882,3 +4882,50 @@ target -> why K=5 + longer schedule were needed.
 Artifact a65f9189 rewritten: "Yaw Was Never Collapsed" (was "Right Conditioning, Same Yaw"),
 teacher-frame histograms + a table contrasting the two frames.
 JSON: /scratch/esraa1/tod_actdist_teachernorm_k1__teacherframe.json
+
+--------------------------------------------------------------------------------
+2026-09-11  857664/858512 FINISHED: 10-task K=5 head-to-head HOLDS -- beats baseline
+--------------------------------------------------------------------------------
+857664 train: COMPLETED 2026-09-11T10:45:05, elapsed 1-17:09:50 (41h10m), all 63,000 iters,
+final loss 0.126, checkpoint iter_000063000 saved. 315 checkpoints on disk (every 200 iters),
+1.7 TB -- as sized in the 2026-09-09 disk-decision entry.
+
+858512 eval: scored every checkpoint through iter 63000 (67 rows, every 1000 + the early
+200/400/600/800), last row iter 63000 = 100% @ 2026-09-11T11:01:23, then TIMEOUT at its 60h
+walltime (2026-09-12T08:11:47) idling post-training -- same established pattern, no data lost.
+
+Closed-loop success rate, full curve:
+  0-5% through iter 5000 (still ramping), climbs into a noisy 30-100% band 6000-30000 (mean
+  this stretch ~0.77), then from iter 31000 to the final checkpoint 63000: EVERY checkpoint
+  >= 93.3%, mean 97.7%, zero checkpoints below 93% (32/32 checkpoints in this window).
+
+  iter    31000  33000  35000  40000  45000  50000  55000  60000  63000
+  success 96.7%  100%   100%   100%   96.7%  96.7%  100%   96.7%  100%
+
+Compared to baseline_500m_train_v2 (765180, iter>=19000 plateau): baseline mean 88.5%, 3/33
+checkpoints below 70% (noisy, dips to 50-65% per the 2026-09-09 entry). K=5 10-task from
+iter 31000: mean 97.7%, 0/32 checkpoints below 93% -- higher AND far more stable.
+
+VERDICT: the K=5 full-coverage teacher_on_demos recipe, extended from single-task ketchup to
+all 10 libero_object tasks pooled into one student, HOLDS -- matches the ketchup result's
+qualitative shape (ramp, then a hard-held high plateau from roughly half the schedule on) and
+beats the human-demo baseline on both level and stability. This is the head-to-head result the
+whole teacher_on_demos line of work (2026-09-02 onward) was building to.
+
+Artifact "K=5 Teacher-on-Demos Head-to-Head" updated to the final curve, RUNNING pill -> COMPLETED:
+  https://claude.ai/code/artifact/05c6b275-0912-4660-aec4-68bde6c5ada0
+
+OPEN ITEMS:
+  1. DISK: 315 checkpoints / 1.7 TB on disk, only 67 were ever scored (every 1000 + early
+     200-800). Per the 2026-09-09 decision (option a): prune to the 67 scored + keep
+     iter_000063000 as the final artifact, delete the other ~248. NOT YET DONE -- confirming
+     with user before deleting checkpoints at this scale.
+  2. Next experiment per the original plan: the 1b pair (teacher_on_demos_1b_train +
+     baseline_1b_train comparison). teacher_on_demos_1b_train.yaml time_limit is still
+     "12:00:00" -- flagged since 2026-09-08 as too short for 30k 1B-model iters; fix before
+     launching.
+  3. Extending beyond libero_object to the other 3 LIBERO suites (spatial/goal/10-long) needs
+     their *_regen demos brought over to Vulcan first (broken symlinks, per 2026-09-08 entry).
+
+  857664  cosmos_teacher_on_demos_500m_train                          COMPLETED  (63000/63000)
+  858512  cosmos_distill_experiments_teacher_on_demos_500m_train_eval  TIMEOUT (idle, all scored)
