@@ -4992,3 +4992,18 @@ NOT YET LAUNCHED -- ready for launch.submit=true on:
   launch.only=[teacher_on_demos_90m_train,teacher_on_demos_90m_train_eval,
                teacher_on_demos_225m_train,teacher_on_demos_225m_train_eval,
                teacher_on_demos_365m_train,teacher_on_demos_365m_train_eval]
+
+--------------------------------------------------------------------------------
+2026-09-13  LAUNCHED: 90m/225m/365m full 10-task head-to-head, all 3 sizes in parallel
+--------------------------------------------------------------------------------
+  911513  cosmos_teacher_on_demos_90m_train                          PENDING
+  911514  cosmos_distill_experiments_teacher_on_demos_90m_train_eval  PENDING
+  911515  cosmos_teacher_on_demos_225m_train                          PENDING
+  911516  cosmos_distill_experiments_teacher_on_demos_225m_train_eval PENDING
+  911517  cosmos_teacher_on_demos_365m_train                          PENDING
+  911518  cosmos_distill_experiments_teacher_on_demos_365m_train_eval PENDING
+All identical to 500m's proven 63000-iter K=5 10-task recipe (857664/858512, held >=93% every
+checkpoint from iter 31000, mean 97.7%) except num_blocks (1/3/5) and checkpoint_save_iter=1000
+(vs 500m's 200). Next: verify each starts cleanly (staging lines, init-loaded not
+"Training from scratch", finite loss) once running, then compare success-rate curves across all
+4 sizes (90m/225m/365m/500m) once evals start scoring.
