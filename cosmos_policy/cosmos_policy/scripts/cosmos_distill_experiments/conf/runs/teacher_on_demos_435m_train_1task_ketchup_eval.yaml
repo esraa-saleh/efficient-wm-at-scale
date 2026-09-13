@@ -1,0 +1,29 @@
+# Eval companion to teacher_on_demos_435m_train_1task_ketchup.yaml -- same pattern as
+# teacher_on_demos_500m_train_1task_ketchup_k5's own eval (828272): single-task closed-loop sim,
+# every checkpoint (30 of them at max_iter=6000 / checkpoint_save_iter=200), no stride needed at
+# this scale.
+job_name: cosmos_distill_experiments_teacher_on_demos_435m_train_1task_ketchup_eval
+run_type: kd_static_eval
+gpus: 1
+
+data_root: ${oc.env:COSMOS_POLICY_STORAGE,/project/rrg-gberseth/esraa1/cosmos_policy_storage}/LIBERO-Cosmos-Policy/success_only
+output_root: ${oc.env:COSMOS_POLICY_STORAGE,/project/rrg-gberseth/esraa1/cosmos_policy_storage}/cosmos_dit_wm_output
+
+# Must exactly match teacher_on_demos_435m_train_1task_ketchup.yaml's own job_name.
+monitored_job_name: cosmos_teacher_on_demos_435m_train_1task_ketchup
+
+eval_task_suite_name: libero_object
+eval_task_keyword: ketchup
+eval_num_trials_per_task: 3
+eval_checkpoint_format: dcp
+
+eval_inference_experiment: cosmos_kd_student_435m_libero__inference_only
+# Must equal teacher_on_demos_435m_train_1task_ketchup.dataset_stats_override_path.
+eval_dataset_stats_path: ${oc.env:COSMOS_POLICY_STORAGE,/project/rrg-gberseth/esraa1/cosmos_policy_storage}/LIBERO-Cosmos-Policy/success_only/teacher_libero_dataset_statistics.json
+eval_t5_text_embeddings_path: ${oc.env:COSMOS_POLICY_STORAGE,/project/rrg-gberseth/esraa1/cosmos_policy_storage}/LIBERO-Cosmos-Policy/success_only/t5_embeddings.pkl
+
+time_limit: "15:00:00"
+mem: "40G"
+cpus: 8
+account: ${oc.env:COSMOS_POLICY_ACCOUNT,rrg-gberseth}
+filename: teacher_on_demos_435m_train_1task_ketchup_eval.sbatch

@@ -63,10 +63,27 @@ _OUTPUT_ROOT = os.environ.get("IMAGINAIRE_OUTPUT_ROOT", "/tmp/imaginaire4-output
 # name -> num_blocks. Public (imported by init_student_from_teacher.py to enumerate valid
 # --student_size choices) -- not just this module's own registration loop below. Confirmed against
 # a real kd/student_sizes.py run -- see module docstring.
+#
+# Sub-500m entries (2026-09-13, smallest-viable-student search): confirmed via the same
+# kd/student_sizes.py sweep extended down to num_blocks=1, run on a GPU node (the meta-device
+# MiniTrainDIT build still imports transformer_engine, which needs a CUDA context to import even
+# though no forward/backward pass runs -- CPU-only fails at import time, not at the actual param
+# count). num_blocks=1 is the architectural floor for this depth-reduction scheme: width/heads
+# stay fixed at the teacher's (model_channels=2048, num_heads=16), so a "0-block" student would be
+# just the shared patchify/embed/output trunk (~20M params) with no transformer processing at all
+# -- not registered, not meaningful. Real counts: 1->88.6M, 2->157.8M, 3->227.0M, 4->296.2M,
+# 5->365.4M, 6->434.6M (vs the existing 7->503.8M "500m"). Labels below are round numbers within
+# ~2-5% of the real count, same convention as the existing entries (e.g. "700m" is really 711.4M).
 STUDENT_SIZES = {
     "1b": 14,  # 0.988B
     "700m": 10,  # 0.711B
     "500m": 7,  # 0.504B
+    "435m": 6,  # 0.435B
+    "365m": 5,  # 0.365B
+    "300m": 4,  # 0.296B
+    "225m": 3,  # 0.227B
+    "150m": 2,  # 0.158B
+    "90m": 1,  # 0.089B -- architectural floor (num_blocks=1)
 }
 
 

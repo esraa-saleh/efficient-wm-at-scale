@@ -1,0 +1,38 @@
+# Smallest-viable-student search (2026-09-13): identical recipe to teacher_on_demos_500m_train.yaml
+# (K=5 full-coverage teacher targets, teacher-norm-throughout) except restricted to the single
+# ketchup task -- same fast single-task probe teacher_on_demos_500m_train_1task_ketchup_k5 used to
+# validate the K=5 recipe (job 828271, held ~98% from iter 3000) before committing to the 10-task
+# head-to-head. Only the model size differs: `student_size` below is one of the sub-500m entries
+# added to net_experiments.py's STUDENT_SIZES (435m -> num_blocks=6, ~434.6M real
+# params). Needs kd_inits/student_init_435m_dcp (init_student_from_teacher.py --student_size 435m
+# --dcp_out ...) built first.
+job_name: cosmos_teacher_on_demos_435m_train_1task_ketchup
+
+data_root: ${oc.env:COSMOS_POLICY_STORAGE,/project/rrg-gberseth/esraa1/cosmos_policy_storage}/LIBERO-Cosmos-Policy/success_only
+output_root: ${oc.env:COSMOS_POLICY_STORAGE,/project/rrg-gberseth/esraa1/cosmos_policy_storage}/cosmos_dit_wm_output
+
+experiment: cosmos_kd_student_435m_libero
+suites: [libero_object_regen]
+task_names: [ketchup]
+max_iter: 6000
+batch_size: 8
+checkpoint_save_iter: 200
+num_workers: 4
+stage_data_to_tmpdir: true
+extra_overrides:
+  checkpoint.load_path: ${oc.env:COSMOS_POLICY_STORAGE,/project/rrg-gberseth/esraa1/cosmos_policy_storage}/kd_inits/student_init_435m_dcp
+# Same shared K=5 sidecar dir the 10-task run used -- it already contains ketchup's sidecar
+# (job 793246), so no rebuild needed; task_names above restricts the dataloader to just that file.
+teacher_on_demos_dir: ${oc.env:COSMOS_POLICY_STORAGE,/project/rrg-gberseth/esraa1/cosmos_policy_storage}/LIBERO-Cosmos-Policy/success_only/libero_object_regen__teacher_on_demos
+teacher_on_demos_num_samples: 5
+dataset_stats_override_path: ${oc.env:COSMOS_POLICY_STORAGE,/project/rrg-gberseth/esraa1/cosmos_policy_storage}/LIBERO-Cosmos-Policy/success_only/teacher_libero_dataset_statistics.json
+# Unique per size to avoid torchrun rendezvous EADDRINUSE if two of these land on the same node.
+master_port: 12350
+# 500M K=5 ketchup (828271) took 3:56:27 for 6000 iters; smaller models are only faster (fewer
+# transformer blocks per iter, same batch/data cost) -- 15h keeps the same ceiling as that proven
+# run rather than guessing a tighter one per size.
+time_limit: "15:00:00"
+mem: "40G"
+cpus: 8
+account: ${oc.env:COSMOS_POLICY_ACCOUNT,rrg-gberseth}
+filename: teacher_on_demos_435m_train_1task_ketchup.sbatch

@@ -86,6 +86,20 @@ defaults:
   - runs@runs.teacher_on_demos_500m_train_eval: teacher_on_demos_500m_train_eval
   - runs@runs.teacher_on_demos_1b_train: teacher_on_demos_1b_train
   - runs@runs.teacher_on_demos_1b_train_eval: teacher_on_demos_1b_train_eval
+  # Smallest-viable-student search (2026-09-13): single-task (ketchup) K=5 probes at each sub-500m
+  # STUDENT_SIZES entry (kd/net_experiments.py). Bisect from 300m rather than launching all 6.
+  - runs@runs.teacher_on_demos_435m_train_1task_ketchup: teacher_on_demos_435m_train_1task_ketchup
+  - runs@runs.teacher_on_demos_435m_train_1task_ketchup_eval: teacher_on_demos_435m_train_1task_ketchup_eval
+  - runs@runs.teacher_on_demos_365m_train_1task_ketchup: teacher_on_demos_365m_train_1task_ketchup
+  - runs@runs.teacher_on_demos_365m_train_1task_ketchup_eval: teacher_on_demos_365m_train_1task_ketchup_eval
+  - runs@runs.teacher_on_demos_300m_train_1task_ketchup: teacher_on_demos_300m_train_1task_ketchup
+  - runs@runs.teacher_on_demos_300m_train_1task_ketchup_eval: teacher_on_demos_300m_train_1task_ketchup_eval
+  - runs@runs.teacher_on_demos_225m_train_1task_ketchup: teacher_on_demos_225m_train_1task_ketchup
+  - runs@runs.teacher_on_demos_225m_train_1task_ketchup_eval: teacher_on_demos_225m_train_1task_ketchup_eval
+  - runs@runs.teacher_on_demos_150m_train_1task_ketchup: teacher_on_demos_150m_train_1task_ketchup
+  - runs@runs.teacher_on_demos_150m_train_1task_ketchup_eval: teacher_on_demos_150m_train_1task_ketchup_eval
+  - runs@runs.teacher_on_demos_90m_train_1task_ketchup: teacher_on_demos_90m_train_1task_ketchup
+  - runs@runs.teacher_on_demos_90m_train_1task_ketchup_eval: teacher_on_demos_90m_train_1task_ketchup_eval
   - _self_
 
 hydra:
