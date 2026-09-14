@@ -5190,3 +5190,38 @@ committing to building the full VE loss's extra frozen-teacher-forward-pass infr
 
 Also launched today: 150m (2-block) bracketing run, see entry above -- unrelated to this
 diagnostic, both from the same "smallest-viable-student" investigation.
+
+--------------------------------------------------------------------------------
+2026-09-14  Correction to the per-frame breakdown read: image terms dominate the loss ~95%
+--------------------------------------------------------------------------------
+User caught the more important number in the same table above: computing each term's SHARE of
+the total (equally-weighted, unweighted-beyond-EDM's-lambda(sigma)) 9-frame mean --
+
+  size    action  future-proprio  future-wrist  future-primary  value  | images(wrist+primary)  action+value
+  90m      5.1%       0.9%          59.2%          33.9%        0.9%   |        93.1%                6.0%
+  225m     3.2%       0.5%          76.6%          18.8%        0.8%   |        95.5%                4.0%
+  365m     4.1%       0.4%          76.6%          17.7%        1.2%   |        94.3%                5.3%
+  500m     3.3%       0.5%          76.5%          18.5%        1.3%   |        94.9%                4.6%
+
+Holds at EVERY size: 93-95% of the actual backpropagated training loss is the two future-image
+reconstruction terms; action+value combined never exceed ~6%. kendall_loss.mean() is a straight
+per-element mean over all 9 frames with no per-term reweighting beyond EDM's lambda(sigma), and
+natural-image content has far higher irreducible per-element MSE than a 7-dim action vector or
+scalar value, so images dominate the gradient-weighted loss at every size, not just 90m.
+
+This REVISES the previous entry's read of action's 3.42x degradation. Rather than reading it as
+"the whole trunk is generally capacity-short, independent of objective" (the more pessimistic
+read for VE), the more specific interpretation is a starvation effect: with ~95% of gradient
+magnitude fighting to reproduce camera frames the deployed policy is never evaluated on, action
+gets only a sliver of training signal to improve on -- worst exactly where capacity is tightest
+(90m). This is a MORE favorable case for value-equivalence-style reweighting than the previous
+entry suggested, not less: removing/down-weighting the two dominant image terms would redirect
+the ~95% majority of gradient magnitude itself toward the ~5% (action+value) that actually
+matters for success, not just free up abstract "shared capacity."
+
+Cheapest test before building the full VE loss (frozen-teacher-forward-pass on the student's own
+imagined successor state): a simple ablation reweighting future-wrist/future-primary down (or to
+zero) in the existing joint loss at 90m, same init/data/iters, and check whether action's own
+per-frame loss and closed-loop success move. This requires editing text2world_model.py's loss
+reduction (an existing tracked file) -- NOT done, flagged for explicit go-ahead per the
+no-existing-code-edits preference, not run this session.
