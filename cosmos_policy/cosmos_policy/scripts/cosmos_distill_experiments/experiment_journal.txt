@@ -5031,3 +5031,30 @@ No eval rows yet for any of the 3 (checkpoint_save_iter=1000, first checkpoint n
 last check, iter ~250-260). Next: check back once each has its first few eval points in, watch
 for the same iter-3000-6000ish "does it hold" question the 500m run answered (>=93% every
 checkpoint from iter 31000).
+
+--------------------------------------------------------------------------------
+2026-09-14  911513-911518 mid-run: clear size ordering emerging
+--------------------------------------------------------------------------------
+All 3 still RUNNING, ~22h elapsed. Progress: 90m iter 40659/63000 (64.5%), 225m 38108/63000
+(60.5%), 365m 36410/63000 (57.8%). Iter speed holding steady at the earlier measurements (1.94 /
+2.06 / 2.16 s/iter) -> ETAs ~12h / ~14h / ~16h remaining respectively.
+
+Success-rate, mean over iter>=20000 (the window all 3 have reached):
+  size   num_blocks  mean   checkpoints<70%  n
+  365m   5           0.944  0/16             16
+  225m   3           0.778  6/18             18
+  90m    1           0.603  13/21            21
+
+365m (5 blocks) already looks like the 500m pattern (828271/857664 held >=93% once past ~half the
+schedule) -- essentially matches. 225m (3 blocks) is noisier, more like 500m's own pre-settled
+6000-30000 stretch; it's only at iter 37000/63000 so may still tighten as it approaches the full
+schedule (500m didn't cleanly settle until iter ~31000/63000, a similar relative point). 90m (1
+block) is clearly the outlier -- despite being FURTHEST along (64.5% vs the others' ~58-60%), its
+mean is lowest and it dips below 70% in more than half its recent checkpoints (13/21). Early read:
+1 block (88.6M params) may be under capacity for this task, distinct from "just needs more
+training" -- worth watching whether it tightens in its remaining ~12h or stays noisy through
+iter 63000.
+
+Next: check back near each one's completion (~12-16h out) for the final verdict; if 90m stays
+noisy through 63000 while 225m/365m settle, that brackets the smallest-viable answer between 1
+and 3 blocks (89M-227M) rather than needing to test the intermediate 150m separately.
