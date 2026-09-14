@@ -5058,3 +5058,76 @@ iter 63000.
 Next: check back near each one's completion (~12-16h out) for the final verdict; if 90m stays
 noisy through 63000 while 225m/365m settle, that brackets the smallest-viable answer between 1
 and 3 blocks (89M-227M) rather than needing to test the intermediate 150m separately.
+
+--------------------------------------------------------------------------------
+2026-09-14  Size-comparison artifact, why the loss jump is 1->3 not 3->5->7, VE loss design
+--------------------------------------------------------------------------------
+Published a live comparison artifact (loss + success-rate curves, all 4 sizes, hoverable/table
+view) pulling directly from each run's train_loss.csv / eval_results.csv:
+https://claude.ai/code/artifact/afd92875-7a0c-42ff-be94-f9fdf82a1b70
+Note: had to correct the storage path -- conf/runs/*.yaml's default COSMOS_POLICY_STORAGE points
+at /project/rrg-gberseth/esraa1/..., but the account is actually aip-courvill; real data lives
+under ~/projects/aip-courvill/esraa1/cosmos_dit_wm_output/... The yaml default is stale (env var
+COSMOS_POLICY_STORAGE presumably overrides it at submission time) -- worth fixing at the source
+if it causes confusion again, not fixed this session.
+
+Mean success (iter>=20000) at time of pull: 500m 93.4% (complete, 63000/63000), 365m 95.7%
+(75.5% done, 0/28 ckpts <70%), 225m 84.0% (79.0% done, 6/30 <70%), 90m 62.2% (84.3% done --
+furthest along -- yet 20/33 <70%, lowest and noisiest of the four).
+
+Investigated WHY: loss curves show a sharp gap 90m->225m (final smoothed loss 0.40 vs 0.20) but
+225m/365m/500m cluster tightly (0.20/0.17/0.13) -- i.e. the loss-floor gap tracks 1 vs 3+ blocks,
+not block count linearly, even though params scale perfectly linearly with blocks (+-69.2M/block,
+confirmed via kd/student_sizes.py's exact sweep: 90m=88.58M/1blk, 225m=227.00M/3blk,
+365m=365.41M/5blk, 500m=503.82M/7blk). Mechanistic explanation: MiniTrainDIT holds width/heads
+fixed (model_channels=2048, heads=16) and only varies depth, so this isolates a "sequential
+composition steps" axis, not a raw-capacity axis -- 1 block gives exactly one attention+MLP pass
+before the network must commit to 5 simultaneous outputs (action/future-proprio/2x future-frame/
+value), too shallow to stage "read scene -> infer action -> infer consequence -> assign value" as
+sequential nonlinear steps; 3+ blocks cross whatever minimum composition-depth this task needs,
+after which more depth gives diminishing (not qualitatively different) returns -- a knee, not a
+line, consistent with per-block AdaLN-LoRA conditioning and per-block abs pos emb only being
+applied once at depth=1 vs multiple specializable times at depth=3+.
+
+Cross-checked this against epiplexity (Finzi/Qiu/Jiang/Izmailov/Kolter/Wilson, arXiv:2601.03220,
+"From Entropy to Epiplexity") via its Eq. 8 prequential estimator (area under the training loss
+curve above the final loss, computed directly from each run's existing train_loss.csv, no new
+run needed): naive area-per-iter showed 90m at ~2x the others (0.127 vs 0.06-0.07), but this was
+confounded by init quality -- 90m's teacher-derived 1-block init starts at loss 43.48 vs ~8 for
+the other three (cruder single-layer surgical copy). Excluding the first 5000 iters of burn-in,
+steady-state absorption rates converge to a comparable range across all 4 sizes (~0.03-0.04/iter)
+-- 1 block is NOT absorbing structure more slowly per step in any general sense. The real signal
+is in whether that absorption keeps paying off: comparing first-half vs second-half mean loss
+in the post-burn-in window, 90m improves only 15.8% further vs 500m's 26.6% (225m 18.9%, 365m
+23.1%) -- 90m is the one closest to flatlining, a capacity-saturation signature (paper's Rule-54-
+like "still extracting structure, diminishing" for the larger sizes vs Rule-15/near-ceiling for
+90m), not an undertrained-model signature. Scripts: kd/student_sizes.py (unchanged, already had
+the param sweep); ad-hoc epiplexity computation was a scratchpad script, not committed (no
+existing files touched, per user preference -- see feedback memory).
+
+This reframes the standing "value equivalence" question (first raised 2026-09-14 re: Grimm et al
+NeurIPS 2020 VE Principle): if 90m were a Rule-30-like case (zero epiplexity, structurally
+un-learnable at this capacity) a VE loss would not help since there's no structure to redirect
+capacity toward. It isn't -- 90m demonstrably extracts real structure, just saturates sooner --
+which is the more favorable case for VE (redirect capacity from the value-irrelevant future-
+frame/proprio reconstruction term toward the action/value terms that actually drive success).
+Wrote up the concrete VE loss (using the teacher itself as the value function v_phi, queried on
+the student's own imagined successor state, compared against the sidecar's existing v-tilde which
+already equals v_phi at the TEACHER's successor state -- so half the comparison is free):
+kd/Value equivalence loss.md and kd/value_equivalence_loss.tex (compiles clean, 3pp).
+
+Open question the VE analysis can't resolve from the aggregate loss alone: is 90m's saturation
+coming from the future-frame/proprio reconstruction term (VE-fixable) or the action term itself
+(not VE-fixable -- would need actual depth)? train_loss.csv only logs the aggregate scalar;
+wandb is disabled for these runs (wandb_mode: disabled in each run's resolved config) so there's
+no existing per-target breakdown anywhere. The model already computes this internally though --
+text2world_model.py's compute_loss_with_epsilon_and_sigma returns output_batch["edm_loss_per_
+frame"], a per-frame-slot loss (shape [B,T=9]) matching teacher_on_demos_loss.tex's 9 frame roles
+[blank, current-proprio, current-wrist, current-primary, action, future-proprio, future-wrist,
+future-primary, value] -- just never logged out. Dispatched a background agent (new standalone
+script only, no edits to existing files) to load the iter-40000 DCP checkpoint (all 4 sizes have
+one -- clean matched comparison point) for each size, run the same held-out batch + same noise
+seed through model.training_step() under torch.no_grad(), and print the per-frame-slot loss
+table for all 4 sizes side by side. Job submitted (923648 as of last check), pending in queue.
+Does NOT touch the live 911513-911518 training jobs -- read-only checkpoint load in a separate
+job. Result pending; will settle the VE-vs-depth question empirically once it lands.
