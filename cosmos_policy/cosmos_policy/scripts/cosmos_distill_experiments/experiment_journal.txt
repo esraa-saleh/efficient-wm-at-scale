@@ -5156,3 +5156,37 @@ don't survive). Without this the yaml's stale rrg-gberseth fallback path is used
 with a PermissionError on /project/rrg-gberseth (that account no longer backs this project -- see
 the 2026-09-14 size-comparison-artifact note above about the storage path). Worth fixing the
 stale yaml defaults at the source if this trips up a future session again.
+
+--------------------------------------------------------------------------------
+2026-09-14  Per-frame loss breakdown result (job 923648) -- action term is NOT spared
+--------------------------------------------------------------------------------
+Same held-out batch + noise seed run through iter_000040000 checkpoints for all 4 sizes via
+model.training_step() (standalone scratch script, no existing files touched -- output at
+/scratch/esraa1/frame_loss_compare/). Frame ordering verified against LIBERODataset.__getitem__,
+matches teacher_on_demos_loss.tex's roles exactly (the 4 conditioning frames all read exactly
+0.0 loss for every size -- confirms they're frame-replaced, not diffused, sanity-checks the
+extraction). Per-frame EDM loss, 90m/225m/365m/500m:
+
+  term             90m       225m      365m      500m     | 90m/500m ratio
+  ACTION           0.01571   0.00513   0.00611   0.00459   | 3.42x
+  future-proprio   0.00278   0.00085   0.00064   0.00069   | 4.06x
+  future-wrist     0.18242   0.12333   0.11387   0.10638   | 1.71x
+  future-primary   0.10450   0.03035   0.02635   0.02567   | 4.07x
+  VALUE            0.00272   0.00132   0.00175   0.00175   | 1.55x
+
+Result is NOT the hoped-for clean split (action fine, only reconstruction degraded). ACTION's
+90m/500m ratio (3.42x) sits with the worst reconstruction terms, not with VALUE's (1.55x,
+smallest of all 5 -- 365m and 500m are literally identical at 0.00175). This weakens the
+"capacity misallocation -- VE redirects it and action stays intact" hypothesis raised on
+2026-09-14: the 1-block trunk looks generally representationally short across all 5 outputs
+(including the one VE leaves untouched), not specifically wasting itself on the value-irrelevant
+channel. The encouraging piece: VALUE is the LEAST degraded term of the five, meaning there's
+still real headroom specifically in the value-consistency direction VE actually optimizes --
+just not the slam-dunk case the epiplexity check alone suggested.
+
+Caveat: single batch, single checkpoint, single noise seed -- a direction, not a robust estimate.
+Averaging over several batches would tighten this if it becomes decision-relevant (e.g. before
+committing to building the full VE loss's extra frozen-teacher-forward-pass infra).
+
+Also launched today: 150m (2-block) bracketing run, see entry above -- unrelated to this
+diagnostic, both from the same "smallest-viable-student" investigation.
