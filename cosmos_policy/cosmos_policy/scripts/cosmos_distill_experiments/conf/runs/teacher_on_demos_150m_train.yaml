@@ -1,0 +1,42 @@
+# Smallest-viable-student search (2026-09-13/14): the SAME 10-task K=5 head-to-head recipe as
+# teacher_on_demos_500m_train.yaml (857664/858512 -- completed, holds >=93% every checkpoint from
+# iter 31000 on, mean 97.7%, beats baseline_500m_train_v2's 88.5%/noisy plateau) -- identical data,
+# iteration budget, and objective. Only the model size differs: `experiment` below is one of the
+# sub-500m entries in net_experiments.py's STUDENT_SIZES (150m -> num_blocks=2, ~157.8M
+# real params). Needs kd_inits/student_init_150m_dcp (built already, job 911402).
+#
+# This is the intermediate point between 90m (1 block, saturating/capacity-limited per the
+# 2026-09-14 epiplexity check -- lowest & noisiest success despite being furthest along) and 225m
+# (3 blocks, matches the 500m plateau pattern). Brackets whether the smallest-viable size sits at
+# exactly 2 blocks or closer to 3.
+#
+# Deliberate delta from the 500m yaml: checkpoint_save_iter 200 -> 1000, matching this yaml's own
+# eval_every_n_iters (below) instead of saving 5x more checkpoints than eval ever scores -- same
+# fix already applied to the 90m/225m/365m siblings.
+job_name: cosmos_teacher_on_demos_150m_train
+
+data_root: ${oc.env:COSMOS_POLICY_STORAGE,/project/rrg-gberseth/esraa1/cosmos_policy_storage}/LIBERO-Cosmos-Policy/success_only
+output_root: ${oc.env:COSMOS_POLICY_STORAGE,/project/rrg-gberseth/esraa1/cosmos_policy_storage}/cosmos_dit_wm_output
+
+experiment: cosmos_kd_student_150m_libero
+suites: [libero_object_regen]
+max_iter: 63000
+batch_size: 8
+checkpoint_save_iter: 1000
+num_workers: 4
+stage_data_to_tmpdir: true
+extra_overrides:
+  checkpoint.load_path: ${oc.env:COSMOS_POLICY_STORAGE,/project/rrg-gberseth/esraa1/cosmos_policy_storage}/kd_inits/student_init_150m_dcp
+# Same shared K=5 sidecar dir + all 10 task sidecars the 500m head-to-head used -- no rebuild.
+teacher_on_demos_dir: ${oc.env:COSMOS_POLICY_STORAGE,/project/rrg-gberseth/esraa1/cosmos_policy_storage}/LIBERO-Cosmos-Policy/success_only/libero_object_regen__teacher_on_demos
+teacher_on_demos_num_samples: 5
+dataset_stats_override_path: ${oc.env:COSMOS_POLICY_STORAGE,/project/rrg-gberseth/esraa1/cosmos_policy_storage}/LIBERO-Cosmos-Policy/success_only/teacher_libero_dataset_statistics.json
+# Unique per size/run-type -- next free slot after 90m/225m/365m's 12360-12362.
+master_port: 12363
+# 500m took 41h10m for the identical 63000-iter recipe; smaller models are only faster per iter
+# (fewer transformer blocks, same batch/data cost) -- 60h keeps the same ceiling as the proven run.
+time_limit: "60:00:00"
+mem: "40G"
+cpus: 8
+account: ${oc.env:COSMOS_POLICY_ACCOUNT,rrg-gberseth}
+filename: teacher_on_demos_150m_train.sbatch

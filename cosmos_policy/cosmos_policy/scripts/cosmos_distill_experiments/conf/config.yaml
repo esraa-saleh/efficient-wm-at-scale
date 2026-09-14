@@ -108,6 +108,10 @@ defaults:
   - runs@runs.teacher_on_demos_225m_train_eval: teacher_on_demos_225m_train_eval
   - runs@runs.teacher_on_demos_90m_train: teacher_on_demos_90m_train
   - runs@runs.teacher_on_demos_90m_train_eval: teacher_on_demos_90m_train_eval
+  # 2026-09-14: 2-block (150m) bracketing point between 90m (1 block, saturating per the
+  # epiplexity check) and 225m (3 blocks, matches 500m's plateau) -- same full 10-task recipe.
+  - runs@runs.teacher_on_demos_150m_train: teacher_on_demos_150m_train
+  - runs@runs.teacher_on_demos_150m_train_eval: teacher_on_demos_150m_train_eval
   - _self_
 
 hydra:

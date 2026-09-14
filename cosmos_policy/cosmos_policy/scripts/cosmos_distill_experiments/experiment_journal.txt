@@ -5131,3 +5131,28 @@ seed through model.training_step() under torch.no_grad(), and print the per-fram
 table for all 4 sizes side by side. Job submitted (923648 as of last check), pending in queue.
 Does NOT touch the live 911513-911518 training jobs -- read-only checkpoint load in a separate
 job. Result pending; will settle the VE-vs-depth question empirically once it lands.
+
+--------------------------------------------------------------------------------
+2026-09-14  LAUNCHED: 150m (2-block) bracketing point
+--------------------------------------------------------------------------------
+Built teacher_on_demos_150m_train(.yaml) + _eval.yaml, identical to the 90m/225m/365m full
+10-task recipe (max_iter=63000, batch_size=8, K=5, teacher-norm-throughout, checkpoint_save_iter
+1000 = eval_every_n_iters) -- diffed the generated sbatch against teacher_on_demos_365m_train's
+proven one, only job_name/paths/master_port(12363, next free slot after 90m/225m/365m's
+12360-12362)/experiment name/init path differ. Uses kd_inits/student_init_150m_dcp (already
+built, job 911402). Registered in conf/config.yaml. Dry-run clean, then launched:
+  923730  cosmos_teacher_on_demos_150m_train                          PENDING (Priority)
+  923731  cosmos_distill_experiments_teacher_on_demos_150m_train_eval PENDING (Priority)
+
+Rationale: brackets the smallest-viable-size question tighter. 90m (1 block) saturates per the
+epiplexity check; 225m (3 blocks) matches the 500m plateau (noisier early, tightening). 150m (2
+blocks, 157.8M params) sits exactly between them -- resolves whether the real threshold is at 2
+or at 3 blocks, sharper than the 89M-227M bracket left after the first three sizes.
+
+Note for next launch: submit_sweep.py needs COSMOS_POLICY_STORAGE/COSMOS_POLICY_ACCOUNT set --
+`source .venv/bin/activate && source activate_cuda_env.sh` from the cosmos_policy/ dir (NOT
+piped through anything, e.g. `| tail` -- piping runs the `source` in a subshell and the exports
+don't survive). Without this the yaml's stale rrg-gberseth fallback path is used and mkdir fails
+with a PermissionError on /project/rrg-gberseth (that account no longer backs this project -- see
+the 2026-09-14 size-comparison-artifact note above about the storage path). Worth fixing the
+stale yaml defaults at the source if this trips up a future session again.
