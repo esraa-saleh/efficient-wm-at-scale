@@ -5225,3 +5225,50 @@ zero) in the existing joint loss at 90m, same init/data/iters, and check whether
 per-frame loss and closed-loop success move. This requires editing text2world_model.py's loss
 reduction (an existing tracked file) -- NOT done, flagged for explicit go-ahead per the
 no-existing-code-edits preference, not run this session.
+
+--------------------------------------------------------------------------------
+2026-09-14  MPC/planning eval investigation: exists in vendored code, never exercised for LIBERO
+--------------------------------------------------------------------------------
+Separate thread from the size-comparison work above: does the vendored (not project-authored)
+Cosmos-Policy codebase support test-time planning -- sample N candidate actions, score each via
+the model's own predicted future-state/value, execute the best -- instead of the open-loop
+single-sample policy our teacher_on_demos evals currently use? Confirmed yes:
+run_libero_eval.py's PolicyEvalConfig (num_queries_best_of_n, ar_future_prediction,
+ar_value_prediction, search_depth, planning_model_ckpt_path, etc.) implements exactly this
+(run_episode's seed_to_return_dict / max(..., key=value) selection). Checkpoint-agnostic: if
+planning_model_ckpt_path is left empty, the SAME checkpoint self-scores (no separate model
+required) -- confirmed via cosmos_utils.py's get_planning_model fallback logic.
+
+Important correction after initially over-trusting the dataclass defaults: BOTH documented
+run_libero_eval.py usage examples, and every logged eval run under experiments/robot/libero/logs/,
+have planning OFF (ar_future_prediction=False, ar_value_prediction=False). No planning run has
+ever actually been exercised for LIBERO in this repo -- the only genuinely validated planning
+precedent anywhere in the codebase is ALOHA's (aloha/deploy.py's "main planning config" docstring
+example), and that ALOHA planning model was ALSO fine-tuned differently (648 real rollouts pooled
+from 5 policies specifically for an accurate V(s')) from its own base policy -- a checkpoint type
+we don't have an equivalent of for LIBERO. Denoising-step settings differ meaningfully between the
+untested LIBERO defaults (future_state/value: 1 step) and ALOHA's validated ones (5 steps) --
+another reason not to trust the LIBERO defaults blindly.
+
+ALOHA side-quest (checkpoint setup only, kept; K=5 dataset build fully reverted): fetched
+nvidia/Cosmos-Policy-ALOHA-Predict2-2B + nvidia/Cosmos-Policy-ALOHA-Planning-Model-Predict2-2B
+checkpoints via new setup_aloha_planning_checkpoints.sh (repo root, mirrors
+setup_cosmos_policy_uv.sh's own download_hf_checkpoint/download_hf_file pattern) -- confirmed
+present in hf_cache. A follow-on attempt to build two K=5 teacher_on_demos sidecar datasets for
+ALOHA (one per checkpoint) found real code gaps (constants.py's fragile sys.argv-based platform
+detection, ALOHADataset missing the sidecar mechanism entirely, batch_prep.py/synthetic_
+generation.py hardcoding one wrist camera vs ALOHA's two) and produced 3 commits generalizing
+those -- then was fully reverted (git reset --hard) per explicit user request before this journal
+entry, since the user redirected back to LIBERO. Nothing from that ALOHA code work survives;
+only the checkpoint-fetch script remains.
+
+Current LIBERO experiment: self-scoring MPC using nvidia/Cosmos-Policy-LIBERO-Predict2-2B as BOTH
+the acting policy and its own planning/scorer (no separate planning model, matching what we
+actually have), denoising-step/ensemble settings borrowed from ALOHA's validated precedent since
+none exist for LIBERO, task_suite_name=libero_object (matching this project's own suite, not the
+docstring's libero_10). Explicitly exploratory -- self-scoring with the same checkpoint doing 1-5
+denoising steps is untested for LIBERO specifically, not just untested for planning in general.
+Smoketest launched: job 927333 (libero_mpc_selfscore_smoketest, 1-2 tasks x 1 trial), PENDING as
+of this entry. Pre-authorized: if the smoketest runs cleanly, the same agent proceeds straight to
+the full 10-task x 3-trial eval without a further check-in; if it crashes or looks confusing, it
+holds and reports back instead. Result pending.
