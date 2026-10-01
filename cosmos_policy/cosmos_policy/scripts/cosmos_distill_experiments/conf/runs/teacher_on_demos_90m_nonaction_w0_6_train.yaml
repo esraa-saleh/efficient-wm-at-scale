@@ -1,0 +1,41 @@
+# Down-weight-not-zero sweep point (2026-09-23), w=0.6: model.config.non_action_loss_weight=0.6
+# on top of teacher_on_demos_90m_train.yaml -- same init/data/max_iter=63000/recipe as the plain
+# 90m run and the action_only_loss runs. Tests whether the action-only collapse (63.3% -> 4.2%,
+# experiment_journal.txt 2026-09-22) is caused by the non-action slots being entirely
+# unsupervised (attention-contamination / lost implicit-regularization hypotheses) rather than
+# the loss-scale confound already ruled out (action_only_loss's T rescale, fixed 2026-09-22).
+# Anchors: w=0.0 == action_only_loss (4.2%, post-fix rerun pending), w=1.0 == plain joint loss
+# (63.3%). This is one of 5 sweep points (w in 0.01/0.03/0.1/0.3/0.6); see the other 4
+# teacher_on_demos_90m_nonaction_w*_train.yaml files for the rest, and
+# non_action_loss_weight's own docstring in policy_text2world_model.py for the mechanism.
+job_name: cosmos_teacher_on_demos_90m_nonaction_w0_6_train
+
+data_root: ${oc.env:COSMOS_POLICY_STORAGE,/project/rrg-gberseth/esraa1/cosmos_policy_storage}/LIBERO-Cosmos-Policy/success_only
+output_root: ${oc.env:COSMOS_POLICY_STORAGE,/project/rrg-gberseth/esraa1/cosmos_policy_storage}/cosmos_dit_wm_output
+
+experiment: cosmos_kd_student_90m_libero
+suites: [libero_object_regen]
+max_iter: 63000
+batch_size: 8
+checkpoint_save_iter: 1000
+num_workers: 4
+stage_data_to_tmpdir: true
+extra_overrides:
+  checkpoint.load_path: ${oc.env:COSMOS_POLICY_STORAGE,/project/rrg-gberseth/esraa1/cosmos_policy_storage}/kd_inits/student_init_90m_dcp
+  # The one intentional behavioral delta from teacher_on_demos_90m_train.yaml -- see module
+  # docstring above and CosmosPolicyModelConfig.non_action_loss_weight's own docstring in
+  # policy_text2world_model.py for exactly what this does.
+  model.config.non_action_loss_weight: 0.6
+# Same shared K=5 sidecar dir + all 10 task sidecars the 500m/90m head-to-head runs used -- no rebuild.
+teacher_on_demos_dir: ${oc.env:COSMOS_POLICY_STORAGE,/project/rrg-gberseth/esraa1/cosmos_policy_storage}/LIBERO-Cosmos-Policy/success_only/libero_object_regen__teacher_on_demos
+teacher_on_demos_num_samples: 5
+dataset_stats_override_path: ${oc.env:COSMOS_POLICY_STORAGE,/project/rrg-gberseth/esraa1/cosmos_policy_storage}/LIBERO-Cosmos-Policy/success_only/teacher_libero_dataset_statistics.json
+# Next free master_port slot for this sweep (see all conf/runs/*.yaml master_port values --
+# 12366-12370 reserved for the 5 non_action_loss_weight sweep points).
+master_port: 12370
+# Same size/recipe as teacher_on_demos_90m_train.yaml -- same time budget.
+time_limit: "60:00:00"
+mem: "40G"
+cpus: 8
+account: ${oc.env:COSMOS_POLICY_ACCOUNT,rrg-gberseth}
+filename: teacher_on_demos_90m_nonaction_w0_6_train.sbatch

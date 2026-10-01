@@ -74,6 +74,17 @@ class LIBERODataset(Dataset):
         use_wrist_images: bool = True,
         use_third_person_images: bool = True,
         use_proprio: bool = True,
+        # Independent on/off for the FUTURE counterpart of each current-frame modality above --
+        # see policy_text2world_model.py's CosmosPolicyModelConfig docstring area (2026-10-01,
+        # "physically remove the slots" fix) for why this needs to be separate from
+        # use_wrist_images/use_third_person_images/use_proprio: those three gate the CURRENT-frame
+        # conditioning slot too, which must stay even when the future-prediction target is
+        # dropped entirely from the sequence (not just loss-masked). Defaults to True so every
+        # existing config that never sets these is byte-for-byte unaffected (same frames
+        # allocated as before, since all three legacy flags default True everywhere in practice).
+        use_future_wrist_image: bool = True,
+        use_future_third_person_image: bool = True,
+        use_future_proprio: bool = True,
         num_duplicates_per_image: int = 4,
         rollout_data_dir: str = "",
         demonstration_sampling_prob: float = 0.5,
@@ -163,6 +174,9 @@ class LIBERODataset(Dataset):
         self.use_wrist_images = use_wrist_images
         self.use_third_person_images = use_third_person_images
         self.use_proprio = use_proprio
+        self.use_future_wrist_image = use_future_wrist_image
+        self.use_future_third_person_image = use_future_third_person_image
+        self.use_future_proprio = use_future_proprio
         self.num_duplicates_per_image = num_duplicates_per_image
         self.rollout_data_dir = rollout_data_dir
         self.demonstration_sampling_prob = demonstration_sampling_prob
@@ -857,7 +871,7 @@ class LIBERODataset(Dataset):
         current_sequence_idx += 1
 
         # Add future proprio
-        if self.use_proprio:
+        if self.use_future_proprio:
             future_proprio = episode_data["proprio"][future_frame_idx]
             if teacher_on_demos is not None:
                 future_proprio = teacher_on_demos["future_proprio"][relative_step_idx, teacher_on_demos_k].astype(
@@ -872,7 +886,7 @@ class LIBERODataset(Dataset):
             current_sequence_idx += 1
 
         # Add future wrist image
-        if self.use_wrist_images:
+        if self.use_future_wrist_image:
             future_wrist_image = decompressed_wrist_images[future_frame_idx]
             future_wrist_image = duplicate_array(future_wrist_image, total_num_copies=self.num_duplicates_per_image)
             image_list.append(future_wrist_image)
@@ -880,7 +894,7 @@ class LIBERODataset(Dataset):
             current_sequence_idx += 1
 
         # Add future primary image
-        if self.use_third_person_images:
+        if self.use_future_third_person_image:
             future_image = decompressed_images[future_frame_idx]
             future_image = duplicate_array(future_image, total_num_copies=self.num_duplicates_per_image)
             image_list.append(future_image)
@@ -981,7 +995,9 @@ class LIBERODataset(Dataset):
             ),  # Just copying what others have done in this codebase; important because it shows up as model input
             "proprio": proprio if self.use_proprio else np.zeros_like(episode_data["proprio"][relative_step_idx]),
             "future_proprio": (
-                future_proprio if self.use_proprio else np.zeros_like(episode_data["proprio"][future_frame_idx])
+                future_proprio
+                if self.use_future_proprio
+                else np.zeros_like(episode_data["proprio"][future_frame_idx])
             ),
             "__key__": idx,  # Unique sample identifier (required for callbacks)
             "rollout_data_mask": rollout_data_mask,
@@ -994,9 +1010,13 @@ class LIBERODataset(Dataset):
             "current_proprio_latent_idx": current_proprio_latent_idx if self.use_proprio else -1,
             "current_wrist_image_latent_idx": current_wrist_image_latent_idx if self.use_wrist_images else -1,
             "current_image_latent_idx": current_image_latent_idx if self.use_third_person_images else -1,
-            "future_proprio_latent_idx": future_proprio_latent_idx if self.use_proprio else -1,
-            "future_wrist_image_latent_idx": future_wrist_image_latent_idx if self.use_wrist_images else -1,
-            "future_image_latent_idx": future_image_latent_idx if self.use_third_person_images else -1,
+            "future_proprio_latent_idx": future_proprio_latent_idx if self.use_future_proprio else -1,
+            "future_wrist_image_latent_idx": (
+                future_wrist_image_latent_idx if self.use_future_wrist_image else -1
+            ),
+            "future_image_latent_idx": (
+                future_image_latent_idx if self.use_future_third_person_image else -1
+            ),
             "value_function_return": value_function_return,
             "next_action_chunk": next_action_chunk,
             "next_value_function_return": next_value_function_return,

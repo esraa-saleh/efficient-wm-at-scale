@@ -1,0 +1,49 @@
+# Action-only ablation (2026-09-15) off teacher_on_demos_90m_train.yaml: per-frame loss breakdown
+# (job 923648, corrected reading in the 2026-09-14 "image terms dominate ~95%" journal entry)
+# found that at every student size, including 90m, the two future-camera-frame reconstruction
+# terms account for 93-95% of the joint EDM loss's gradient magnitude -- action+value combined
+# never exceed ~6%. This run tests whether the action term is starved of signal by that majority
+# share (removing it should let action get more of the gradient) or is independently capacity-
+# limited (removing it won't move action's own loss/success much).
+#
+# Identical to teacher_on_demos_90m_train.yaml in EVERY field -- same init (kd_inits/
+# student_init_90m_dcp), same K=5 teacher_on_demos sidecar dir, same teacher-normalization
+# convention (dataset_stats_override_path), same max_iter=63000, same all-10-libero_object-tasks
+# scope -- except: model.config.action_only_loss=true (new flag, policy_text2world_model.py's
+# CosmosPolicyModelConfig/CosmosPolicyDiffusionModel.compute_loss_with_epsilon_and_sigma -- hard-
+# masks the loss to the action-chunk frame slot alone, for every sample, and rescales so the
+# resulting mean is a true average over just that slot's own elements, not a further ~1/9 down-
+# weighting of it), plus job_name/master_port/filename so this doesn't collide with the existing
+# full-joint 90m run's output dir (checkpoint.load_path -- the INPUT init -- is deliberately left
+# identical; only the OUTPUT checkpoint dir, derived from job_name, differs).
+job_name: cosmos_teacher_on_demos_90m_action_only_train
+
+data_root: ${oc.env:COSMOS_POLICY_STORAGE,/project/rrg-gberseth/esraa1/cosmos_policy_storage}/LIBERO-Cosmos-Policy/success_only
+output_root: ${oc.env:COSMOS_POLICY_STORAGE,/project/rrg-gberseth/esraa1/cosmos_policy_storage}/cosmos_dit_wm_output
+
+experiment: cosmos_kd_student_90m_libero
+suites: [libero_object_regen]
+max_iter: 63000
+batch_size: 8
+checkpoint_save_iter: 1000
+num_workers: 4
+stage_data_to_tmpdir: true
+extra_overrides:
+  checkpoint.load_path: ${oc.env:COSMOS_POLICY_STORAGE,/project/rrg-gberseth/esraa1/cosmos_policy_storage}/kd_inits/student_init_90m_dcp
+  # The one intentional behavioral delta from teacher_on_demos_90m_train.yaml -- see module
+  # docstring above and CosmosPolicyModelConfig.action_only_loss's own docstring in
+  # policy_text2world_model.py for exactly what this does.
+  model.config.action_only_loss: true
+# Same shared K=5 sidecar dir + all 10 task sidecars the 500m/90m head-to-head runs used -- no rebuild.
+teacher_on_demos_dir: ${oc.env:COSMOS_POLICY_STORAGE,/project/rrg-gberseth/esraa1/cosmos_policy_storage}/LIBERO-Cosmos-Policy/success_only/libero_object_regen__teacher_on_demos
+teacher_on_demos_num_samples: 5
+dataset_stats_override_path: ${oc.env:COSMOS_POLICY_STORAGE,/project/rrg-gberseth/esraa1/cosmos_policy_storage}/LIBERO-Cosmos-Policy/success_only/teacher_libero_dataset_statistics.json
+# Next free slot after teacher_on_demos_150m_train's 12363 (see all conf/runs/*.yaml master_port
+# values -- 12364 is unused).
+master_port: 12364
+# Same size/recipe as teacher_on_demos_90m_train.yaml -- same time budget.
+time_limit: "60:00:00"
+mem: "40G"
+cpus: 8
+account: ${oc.env:COSMOS_POLICY_ACCOUNT,rrg-gberseth}
+filename: teacher_on_demos_90m_action_only_train.sbatch

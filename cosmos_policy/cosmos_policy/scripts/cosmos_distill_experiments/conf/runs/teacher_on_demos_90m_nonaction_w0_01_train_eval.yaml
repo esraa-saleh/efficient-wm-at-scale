@@ -1,0 +1,34 @@
+# Eval companion to teacher_on_demos_90m_nonaction_w0_01_train.yaml -- identical to teacher_on_demos_90m_train_eval.yaml
+# (full 10-task libero_object suite, eval_every_n_iters=1000) except job_name/monitored_job_name.
+# eval_inference_experiment is unchanged: non_action_loss_weight only affects the TRAINING loss
+# reduction, not the inference/sampling path, so the same cosmos_kd_student_90m_libero__
+# inference_only config applies.
+job_name: cosmos_distill_experiments_teacher_on_demos_90m_nonaction_w0_01_train_eval
+run_type: kd_static_eval
+gpus: 1
+
+data_root: ${oc.env:COSMOS_POLICY_STORAGE,/project/rrg-gberseth/esraa1/cosmos_policy_storage}/LIBERO-Cosmos-Policy/success_only
+output_root: ${oc.env:COSMOS_POLICY_STORAGE,/project/rrg-gberseth/esraa1/cosmos_policy_storage}/cosmos_dit_wm_output
+
+# Must exactly match teacher_on_demos_90m_nonaction_w0_01_train.yaml's own job_name.
+monitored_job_name: cosmos_teacher_on_demos_90m_nonaction_w0_01_train
+
+eval_task_suite_name: libero_object
+eval_num_trials_per_task: 3
+eval_checkpoint_format: dcp
+# Matches this size's train yaml checkpoint_save_iter=1000 -- every checkpoint gets scored, none
+# skipped.
+eval_every_n_iters: 1000
+
+eval_inference_experiment: cosmos_kd_student_90m_libero__inference_only
+# Must equal teacher_on_demos_90m_nonaction_w0_01_train.dataset_stats_override_path.
+eval_dataset_stats_path: ${oc.env:COSMOS_POLICY_STORAGE,/project/rrg-gberseth/esraa1/cosmos_policy_storage}/LIBERO-Cosmos-Policy/success_only/teacher_libero_dataset_statistics.json
+eval_t5_text_embeddings_path: ${oc.env:COSMOS_POLICY_STORAGE,/project/rrg-gberseth/esraa1/cosmos_policy_storage}/LIBERO-Cosmos-Policy/success_only/t5_embeddings.pkl
+
+# Must outlast the train job. Eval polls checkpoints then idles to walltime once training stops --
+# a TIMEOUT here after the last checkpoint is scored is expected, no data lost (established pattern).
+time_limit: "60:00:00"
+mem: "40G"
+cpus: 8
+account: ${oc.env:COSMOS_POLICY_ACCOUNT,rrg-gberseth}
+filename: teacher_on_demos_90m_nonaction_w0_01_train_eval.sbatch

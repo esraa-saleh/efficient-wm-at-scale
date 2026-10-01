@@ -173,6 +173,41 @@ def replace_latent_with_proprio(x0: torch.Tensor, proprio: torch.Tensor, proprio
     return new_x0
 
 
+def replace_latent_with_value(
+    x0: torch.Tensor, value_function_return: torch.Tensor, value_indices: torch.Tensor
+) -> torch.Tensor:
+    """
+    Replaces the image latent (at the specified value index) in clean input image latents x0 with the
+    (broadcast) value-function return.
+
+    Example:
+    Let's say x0 has shape (B=32, C'=16, T', H'=28, W'=28) and value_function_return has shape (B=32,).
+    Then this function overwrites the (C'=16, H'=28, W'=28) volume at x0[:,:,value_indices,:,:] with the
+    scalar return, broadcast to fill the entire volume.
+
+    Caller is responsible for the -1 ("value slot not in use") guard -- this function always writes,
+    mirroring replace_latent_with_action_chunk/replace_latent_with_proprio above, which likewise never
+    guard internally. Unguarded use with value_indices containing -1 will silently overwrite whichever
+    real slot occupies the last T' position, via Python's negative-indexing semantics.
+
+    Args:
+        x0 (torch.Tensor): Clean image latents.
+        value_function_return (torch.Tensor): Ground-truth value-function return, shape (B,).
+        value_indices (torch.Tensor): Batch indices of the image latents to replace.
+
+    Returns:
+        torch.Tensor: Modified image latents.
+    """
+    batch_indices = torch.arange(x0.shape[0], device=x0.device)
+    _, latent_channels, _, latent_h, latent_w = x0.shape
+
+    new_x0 = x0
+    new_x0[batch_indices, :, value_indices, :, :] = (
+        value_function_return.reshape(-1, 1, 1, 1).expand(-1, latent_channels, latent_h, latent_w).to(x0.dtype)
+    )
+    return new_x0
+
+
 @attrs.define(slots=False)
 class CosmosPolicyModelConfig(BaseText2WorldModelConfig):
     """
@@ -208,12 +243,60 @@ class CosmosPolicyModelConfig(BaseText2WorldModelConfig):
     # (Must be an integer - or will be cast to an integer later!)
     action_loss_multiplier: int = 1
 
+    # Ablation flag (2026-09-15, teacher_on_demos action-only run): hard-mask the joint EDM loss
+    # down to ONLY the action-chunk frame slot, for every sample regardless of type. Unlike
+    # `mask_loss_for_action_future_state_prediction` above -- which selects by SAMPLE TYPE (demo
+    # samples keep their action term, rollout world-model samples keep future-state, rollout value
+    # samples keep value) -- this flag zeroes every non-action frame slot unconditionally,
+    # regardless of sample type. The surviving mean stays divided by the FULL T-frame element
+    # count (same down-weighting either flag produces), so the two differ only in WHICH samples
+    # the mask applies to, not in the resulting per-step gradient magnitude on the action slot.
+    # (2026-09-22 fix: previously also rescaled the result by T to make the mean a true average
+    # over the action slot's own elements alone -- removed after that rescale was found to inflate
+    # the effective per-step gradient/step-size on the action pathway ~9x with no compensating LR
+    # change, which was masking the ablation's actual question behind a training-instability
+    # artifact; see experiment_journal.txt 2026-09-22 for the noise-signature evidence.)
+    # Default False so every existing full-joint-loss run (90m/150m/225m/365m/500m teacher_on_demos,
+    # and any other experiment using this model) is completely unaffected.
+    action_only_loss: bool = False
+
+    # Down-weight-not-zero sweep (2026-09-23): generalizes action_only_loss's hard 0/1 mask to a
+    # continuous weight on the non-action frame slots (future-image/wrist/proprio/value), for
+    # every sample regardless of type -- same unconditional scope as action_only_loss. The action
+    # slot's own contribution always stays at weight 1.0 (never rescaled). 1.0 (default) is an
+    # exact no-op, reproducing the plain joint loss byte-for-byte; 0.0 reproduces action_only_loss
+    # exactly (same target selection, same lack of any T-style rescale). Values in between test
+    # whether the action-only collapse (63.3% -> 4.2%, see experiment_journal.txt 2026-09-22) is
+    # caused by the OTHER slots being entirely unsupervised (attention-contamination / lost
+    # implicit-regularization hypotheses) rather than the loss-scale confound already ruled out --
+    # a new, separate flag from action_only_loss so the two already-launched action_only_loss runs
+    # stay exactly as documented and reproducible.
+    non_action_loss_weight: float = 1.0
+
     def __attrs_post_init__(self):
         super().__attrs_post_init__()
         assert not (
             self.mask_loss_for_action_future_state_prediction and self.mask_value_prediction_loss_for_policy_prediction
         ), (
             "Cannot enable both mask_loss_for_action_future_state_prediction and mask_value_prediction_loss_for_policy_prediction!"
+        )
+        assert not (
+            self.action_only_loss
+            and (
+                self.mask_loss_for_action_future_state_prediction
+                or self.mask_value_prediction_loss_for_policy_prediction
+            )
+        ), "action_only_loss is a standalone full-loss-masking ablation; combining it with the other mask_loss_for_*/mask_value_prediction_loss_for_* flags is ambiguous."
+        assert self.non_action_loss_weight == 1.0 or not (
+            self.action_only_loss
+            or self.mask_loss_for_action_future_state_prediction
+            or self.mask_value_prediction_loss_for_policy_prediction
+        ), (
+            "non_action_loss_weight != 1.0 is a standalone down-weighting ablation; combining it "
+            "with action_only_loss/mask_loss_for_*/mask_value_prediction_loss_for_* is ambiguous."
+        )
+        assert 0.0 <= self.non_action_loss_weight <= 1.0, (
+            f"non_action_loss_weight must be in [0, 1], got {self.non_action_loss_weight}"
         )
 
 
@@ -376,7 +459,6 @@ class CosmosPolicyDiffusionModel(BaseDiffusionModel):
         # - value function return (rewards-to-go) to predict (blank image)
         condition.orig_x0_B_C_T_H_W = x0_B_C_T_H_W.clone()  # Keep a backup of the original gt_frames
         batch_indices = torch.arange(x0_B_C_T_H_W.shape[0], device=x0_B_C_T_H_W.device)
-        C_latent, H_latent, W_latent = x0_B_C_T_H_W.shape[1], x0_B_C_T_H_W.shape[3], x0_B_C_T_H_W.shape[4]
         # Action
         x0_B_C_T_H_W = replace_latent_with_action_chunk(
             x0_B_C_T_H_W,
@@ -398,9 +480,20 @@ class CosmosPolicyDiffusionModel(BaseDiffusionModel):
                 proprio_indices=future_proprio_indices,
             )
         # Value
-        x0_B_C_T_H_W[batch_indices, :, value_indices, :, :] = (
-            value_function_return.reshape(-1, 1, 1, 1).expand(-1, C_latent, H_latent, W_latent).to(x0_B_C_T_H_W.dtype)
-        )
+        # NOTE (2026-10-01 fix): this write was previously unconditional. When value_indices is -1
+        # for every sample (value slot not in use -- return_value_function_returns=False, or the
+        # slot physically removed from the sequence, see use_future_proprio/use_future_wrist_image/
+        # use_future_third_person_image in libero_dataset.py), Python's negative-indexing semantics
+        # made `x0_B_C_T_H_W[..., -1, ...]` silently overwrite whatever real slot occupies the LAST
+        # T' position instead of being a no-op -- a pre-existing bug, not new. Guarded the same way
+        # future_proprio already is above; injection itself now factored into replace_latent_with_value
+        # (mirrors replace_latent_with_action_chunk/replace_latent_with_proprio's own split).
+        if torch.all(value_indices != -1):  # -1 indicates value is not used
+            x0_B_C_T_H_W = replace_latent_with_value(
+                x0_B_C_T_H_W,
+                value_function_return,
+                value_indices=value_indices,
+            )
 
         # Get the mean and stand deviation of the marginal probability distribution.
         mean_B_C_T_H_W, std_B_T = self.sde.marginal_prob(x0_B_C_T_H_W, sigma_B_T)
@@ -538,12 +631,33 @@ class CosmosPolicyDiffusionModel(BaseDiffusionModel):
                     mask_B_T[world_batch_indices, future_proprio_indices[world_batch_indices]] = 1
             final_mask_B_T = final_mask_B_T * mask_B_T
 
+        # Ablation: hard-mask the loss down to ONLY the action-chunk frame slot, for every sample
+        # regardless of type -- see `action_only_loss`'s own docstring on CosmosPolicyModelConfig
+        # for why this is a separate flag/mask rather than a mode of mask_loss_for_action_future_
+        # state_prediction above.
+        if self.config.action_only_loss:
+            action_only_mask_B_T = torch.zeros((B, T), dtype=torch.long, device=sigma_B_T.device)
+            action_only_mask_B_T[batch_indices, action_indices] = 1
+            final_mask_B_T = final_mask_B_T * action_only_mask_B_T
+
         # If applicable, upweight the loss on the action predictions by a factor of `action_loss_multiplier`
         if self.config.action_loss_multiplier != 1:
             # Only upweight the loss on the action indices
             final_mask_B_T[batch_indices, action_indices] = final_mask_B_T[batch_indices, action_indices] * int(
                 self.config.action_loss_multiplier
             )
+
+        # Down-weight-not-zero sweep: generalizes action_only_loss's hard 0/1 mask to a continuous
+        # weight on the non-action slots -- see `non_action_loss_weight`'s own docstring on
+        # CosmosPolicyModelConfig. Kept as a separate float tensor (mutually exclusive with the
+        # other masking flags by assert above) rather than folded into final_mask_B_T, which stays
+        # strictly 0/1-valued for every other flag.
+        non_action_weight_B_T = None
+        if self.config.non_action_loss_weight != 1.0:
+            non_action_weight_B_T = torch.full(
+                (B, T), self.config.non_action_loss_weight, dtype=torch.float32, device=sigma_B_T.device
+            )
+            non_action_weight_B_T[batch_indices, action_indices] = 1.0
 
         # extra loss mask for each sample, for example, human faces, hands
         pred_mse_B_C_T_H_W = (x0_B_C_T_H_W - model_pred.x0) ** 2
@@ -557,8 +671,12 @@ class CosmosPolicyDiffusionModel(BaseDiffusionModel):
             or self.config.mask_current_state_action_for_value_prediction
             or self.config.mask_future_state_for_qvalue_prediction
             or self.config.action_loss_multiplier != 1
+            or self.config.action_only_loss
         ):
             kendall_loss = kendall_loss * rearrange(final_mask_B_T, "b t -> b 1 t 1 1")
+
+        if non_action_weight_B_T is not None:
+            kendall_loss = kendall_loss * rearrange(non_action_weight_B_T, "b t -> b 1 t 1 1")
 
         # Get losses for future third-person image prediction
         if torch.all(future_image_indices != -1):  # -1 indicates future third-person image is not used
@@ -673,6 +791,12 @@ class CosmosPolicyDiffusionModel(BaseDiffusionModel):
             "mse_loss": pred_mse_B_C_T_H_W.mean(),
             "edm_loss": edm_loss_B_C_T_H_W.mean(),
             "edm_loss_per_frame": torch.mean(edm_loss_B_C_T_H_W, dim=[1, 3, 4]),
+            # Same per-frame-slot breakdown as edm_loss_per_frame above, but of the loss AFTER any
+            # mask_*/action_only_loss masking is applied (kendall_loss, not the raw unmasked
+            # edm_loss_B_C_T_H_W) -- lets a smoketest confirm a masked-out slot's contribution to
+            # the actual scalar training loss is exactly 0, not just small. Equals edm_loss_per_frame
+            # when no masking flag is enabled (kendall_loss == edm_loss_B_C_T_H_W in that case).
+            "kendall_loss_per_frame": torch.mean(kendall_loss, dim=[1, 3, 4]),
             # Demo sample losses
             "demo_sample_action_mse_loss": demo_sample_action_mse_loss,  # Main action loss for policy
             "demo_sample_action_l1_loss": demo_sample_action_l1_loss,  # Main action loss for policy

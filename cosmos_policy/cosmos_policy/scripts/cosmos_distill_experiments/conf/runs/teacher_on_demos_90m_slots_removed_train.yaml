@@ -1,0 +1,74 @@
+# Physically-smaller-architecture variant (2026-10-01) of teacher_on_demos_90m_train.yaml,
+# implementing the "overcome contamination" fix discussed alongside the down-weight-not-zero
+# sweep: instead of masking the loss on the future-proprio/future-wrist-image/future-image/value
+# frame slots (which still lets the unsupervised slots' incoherent representations contaminate
+# the action slot's own computation via shared self-attention -- see experiment_journal.txt
+# 2026-10-01), this run DROPS those four slots from the sequence entirely before VAE encoding.
+# T' genuinely shrinks (9 slots -> 5: blank, current_proprio, current_wrist_image, current_image,
+# action) -- confirmed architecture-neutral: RoPE position embeddings are computed from the real
+# input shape at runtime, nothing in the DiT/CosmosPolicyModelConfig is sized to a fixed T', so the
+# SAME init checkpoint (trained with the full 9-slot sequence) should load and run correctly with
+# the shorter one. No loss-masking flags needed at all -- with nothing left to predict except
+# action, the existing (unmodified) joint-loss code naturally reduces to action-only, since the
+# other slots simply don't exist in x0_B_C_T_H_W. Uses the new dataloader_train.dataset.
+# use_future_proprio/use_future_wrist_image/use_future_third_person_image flags
+# (libero_dataset.py) plus the pre-existing return_value_function_returns=False (already fully
+# independent, unchanged).
+#
+# Comparison anchors (down-weight-not-zero sweep, same 90m size, same recipe):
+#   action_only_loss (slots present, loss masked to zero):        1.2%  mean success iter>=20k
+#   non_action_loss_weight=0.01 (slots present, tiny loss weight): 64.3%
+#   plain joint loss (w=1.0, all slots present and supervised):    63.3%
+# This run tests whether PHYSICALLY REMOVING the slots recovers performance the same way a tiny
+# nonzero loss weight does (consistent with "any stable target, including none-at-all because
+# there's nothing to be unstable" working, not just "any weight works") -- or whether something
+# about having real information flow through those positions (even noisily supervised) matters in
+# a way physical removal doesn't replicate.
+#
+# Identical to teacher_on_demos_90m_train.yaml in every other field -- same init, same K=5
+# teacher_on_demos sidecar (still used for the action-chunk label; the future_proprio/future_image/
+# future_wrist_image/value arrays in the sidecar simply go unread when their slots are disabled),
+# same max_iter=63000, same all-10-task scope.
+job_name: cosmos_teacher_on_demos_90m_slots_removed_train
+
+data_root: ${oc.env:COSMOS_POLICY_STORAGE,/project/rrg-gberseth/esraa1/cosmos_policy_storage}/LIBERO-Cosmos-Policy/success_only
+output_root: ${oc.env:COSMOS_POLICY_STORAGE,/project/rrg-gberseth/esraa1/cosmos_policy_storage}/cosmos_dit_wm_output
+
+experiment: cosmos_kd_student_90m_libero
+suites: [libero_object_regen]
+max_iter: 63000
+batch_size: 8
+checkpoint_save_iter: 1000
+num_workers: 4
+stage_data_to_tmpdir: true
+extra_overrides:
+  checkpoint.load_path: ${oc.env:COSMOS_POLICY_STORAGE,/project/rrg-gberseth/esraa1/cosmos_policy_storage}/kd_inits/student_init_90m_dcp
+  # The intentional behavioral delta from teacher_on_demos_90m_train.yaml -- see module docstring
+  # above and the new flags' own docstring in libero_dataset.py for exactly what these do.
+  dataloader_train.dataset.use_future_proprio: false
+  dataloader_train.dataset.use_future_wrist_image: false
+  dataloader_train.dataset.use_future_third_person_image: false
+  dataloader_train.dataset.return_value_function_returns: false
+  # state_t is NOT dynamically inferred -- _normalize_video_databatch_inplace
+  # (_src/predict2/models/text2world_model.py:773-776) asserts the dataset's actual pixel-frame
+  # count against get_pixel_num_frames(model.config.state_t) = (state_t-1)*4+1 BEFORE the model
+  # ever sees the batch. LIBERO's base config sets state_t=9 (blank+proprio+wrist+primary+action+
+  # future_proprio+future_wrist+future_primary+value = 9 latent slots -> 33 pixel frames). This
+  # run's 5-slot sequence (blank+proprio+wrist+primary+action) needs state_t=5 -> 17 pixel frames,
+  # confirmed via the smoketest failure this override fixes (AssertionError: 17 != 33 before this
+  # was added). The DiT backbone itself needs no change (RoPE position embeddings are computed
+  # from the real input shape every forward call) -- this one override is the only place T' is
+  # actually fixed anywhere in the stack.
+  model.config.state_t: 5
+# Same shared K=5 sidecar dir + all 10 task sidecars the 500m/90m head-to-head runs used -- no rebuild.
+teacher_on_demos_dir: ${oc.env:COSMOS_POLICY_STORAGE,/project/rrg-gberseth/esraa1/cosmos_policy_storage}/LIBERO-Cosmos-Policy/success_only/libero_object_regen__teacher_on_demos
+teacher_on_demos_num_samples: 5
+dataset_stats_override_path: ${oc.env:COSMOS_POLICY_STORAGE,/project/rrg-gberseth/esraa1/cosmos_policy_storage}/LIBERO-Cosmos-Policy/success_only/teacher_libero_dataset_statistics.json
+# Next free master_port slot (see all conf/runs/*.yaml master_port values -- 12371 is unused).
+master_port: 12371
+# Same size/recipe as teacher_on_demos_90m_train.yaml -- same time budget.
+time_limit: "60:00:00"
+mem: "40G"
+cpus: 8
+account: ${oc.env:COSMOS_POLICY_ACCOUNT,rrg-gberseth}
+filename: teacher_on_demos_90m_slots_removed_train.sbatch

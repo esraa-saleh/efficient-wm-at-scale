@@ -1,0 +1,47 @@
+# Re-run of the action-only ablation (teacher_on_demos_90m_action_only_train.yaml, jobs
+# 968213/968214) after fixing a confound in model.config.action_only_loss (2026-09-22,
+# policy_text2world_model.py): that flag used to ALSO rescale the surviving action-slot loss by
+# T (~9x), on top of masking out the other frame slots -- roughly a 9x jump in effective per-step
+# gradient/step-size on the action pathway with no compensating LR change. The original run
+# collapsed success from the plain-joint 90m's 63.3% to 4.2%; its raw per-iteration training loss
+# was 2.5-3x noisier (relative to its own mean) than plain 90m's at every stage of training, a
+# signature consistent with that rescale, not necessarily with "removing the other targets hurts."
+# The fix (kendall_loss = kendall_loss * T deleted) makes action_only_loss produce the SAME
+# effective per-step gradient magnitude as mask_loss_for_action_future_state_prediction's
+# demo-branch masking -- this run isolates "does removing the other predictive targets alone
+# hurt" from that LR artifact. See experiment_journal.txt 2026-09-22 for the full investigation.
+#
+# Identical to teacher_on_demos_90m_action_only_train.yaml in EVERY field (same init, same K=5
+# sidecar, same max_iter=63000, same action_only_loss=true target selection) except
+# job_name/master_port/filename, so the old (rescaled) 968213/968214 results remain a valid,
+# separate record and are not overwritten.
+job_name: cosmos_teacher_on_demos_90m_action_only_norescale_train
+
+data_root: ${oc.env:COSMOS_POLICY_STORAGE,/project/rrg-gberseth/esraa1/cosmos_policy_storage}/LIBERO-Cosmos-Policy/success_only
+output_root: ${oc.env:COSMOS_POLICY_STORAGE,/project/rrg-gberseth/esraa1/cosmos_policy_storage}/cosmos_dit_wm_output
+
+experiment: cosmos_kd_student_90m_libero
+suites: [libero_object_regen]
+max_iter: 63000
+batch_size: 8
+checkpoint_save_iter: 1000
+num_workers: 4
+stage_data_to_tmpdir: true
+extra_overrides:
+  checkpoint.load_path: ${oc.env:COSMOS_POLICY_STORAGE,/project/rrg-gberseth/esraa1/cosmos_policy_storage}/kd_inits/student_init_90m_dcp
+  # Same flag as the original ablation -- only its underlying implementation changed (the T
+  # rescale was removed in policy_text2world_model.py). See module docstring above.
+  model.config.action_only_loss: true
+# Same shared K=5 sidecar dir + all 10 task sidecars the 500m/90m head-to-head runs used -- no rebuild.
+teacher_on_demos_dir: ${oc.env:COSMOS_POLICY_STORAGE,/project/rrg-gberseth/esraa1/cosmos_policy_storage}/LIBERO-Cosmos-Policy/success_only/libero_object_regen__teacher_on_demos
+teacher_on_demos_num_samples: 5
+dataset_stats_override_path: ${oc.env:COSMOS_POLICY_STORAGE,/project/rrg-gberseth/esraa1/cosmos_policy_storage}/LIBERO-Cosmos-Policy/success_only/teacher_libero_dataset_statistics.json
+# Next free slot after teacher_on_demos_90m_action_only_train's 12364 (see all conf/runs/*.yaml
+# master_port values -- 12365 is unused).
+master_port: 12365
+# Same size/recipe as teacher_on_demos_90m_train.yaml -- same time budget.
+time_limit: "60:00:00"
+mem: "40G"
+cpus: 8
+account: ${oc.env:COSMOS_POLICY_ACCOUNT,rrg-gberseth}
+filename: teacher_on_demos_90m_action_only_norescale_train.sbatch

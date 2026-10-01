@@ -5272,3 +5272,509 @@ Smoketest launched: job 927333 (libero_mpc_selfscore_smoketest, 1-2 tasks x 1 tr
 of this entry. Pre-authorized: if the smoketest runs cleanly, the same agent proceeds straight to
 the full 10-task x 3-trial eval without a further check-in; if it crashes or looks confusing, it
 holds and reports back instead. Result pending.
+
+--------------------------------------------------------------------------------
+2026-09-22  Artifacts: size-comparison refreshed (+90m action-only), new MPC eval page
+--------------------------------------------------------------------------------
+Two artifacts touched this session. Both are private (owner-only) until shared from the page's
+Share menu. Their data was generated with scratchpad scripts, not committed; no tracked code was
+edited.
+
+1) Student size comparison -- UPDATED IN PLACE (same artifact as the 2026-09-14 entry above)
+   https://claude.ai/code/artifact/afd92875-7a0c-42ff-be94-f9fdf82a1b70
+   (claude.ai now also shows it as https://claude.ai/artifact/NiSZTDj3SimYjGvo9NkPrw -- same
+   artifact, version 11)
+   - Rebuilt all 5 sizes (90m/150m/225m/365m/500m) from the raw train_loss.csv / eval_results.csv
+     under ~/projects/aip-courvill/esraa1/cosmos_dit_wm_output/cosmos_policy/cosmos_v2_finetune/.
+     Success stats matched the published version exactly; only change: 365m now has 44 mature
+     (iter>=20k) evals, not 43 (its eval was still finishing when the page was first built).
+   - ADDED the 90m action-only ablation (jobs 968213/968214, see below) as a dashed series on
+     the success chart + its own stat tile. Deliberately left OFF the loss chart: its loss is
+     the action-slot-only objective, not comparable to the joint loss.
+   - Revised the narrative: the "image terms starve the action term" read is contradicted by
+     the ablation (below); page now says so, and flags the effective-LR confound.
+   - "Final loss" tile relabelled to what it actually is: mean of the last 1000 iters.
+
+   Final numbers on the page (mean success iter>=20k / ckpts <70% out of 44):
+     90m 63.3% / 26   150m 78.8% / 9   225m 87.4% / 6   365m 96.5% / 0   500m 93.4% / 3
+     90m action-only 4.2% / 44  (best single ckpt 36.7%, final 3.3%)
+
+   90m action-only ablation result (not previously journaled): training 968213 COMPLETED
+   63000/63000; eval 968214 hit TIMEOUT but had already scored all 63 checkpoints. Uses the
+   uncommitted model.config.action_only_loss flag in policy_text2world_model.py (conf:
+   conf/runs/teacher_on_demos_90m_action_only_train(.yaml|_eval.yaml), also untracked). Removing
+   the future-image/proprio/value terms COLLAPSED the policy (63.3% -> 4.2%) instead of freeing
+   capacity for action. Reads as: the predictive targets support action learning rather than
+   compete with it -> favours re-weighting / a VE loss that keeps a predictive target, over
+   dropping terms. Unresolved confound: the action-only mask renormalises the mean over the
+   action slot alone, so per-element gradient is larger (~effective-LR change) -- could explain
+   part of the collapse; a down-weight (not zero) sweep would separate the two.
+
+2) LIBERO self-scoring MPC eval -- NEW
+   https://claude.ai/artifact/CeqAyeiMWQfXe6XTSPUfu5
+   Covers the smoketest (927333: task 0 x 1 trial, 1/1) and the full run (967898, 2026-09-20,
+   1h02m on 4x L40S): 30/30 on libero_object (10 tasks x 3 trials, every task 3/3). Logs/rollout
+   MP4s: /scratch/esraa1/libero_mpc_selfscore_full/eval_logs/. EGL eglMakeCurrent error in the
+   .err is at env teardown, after results were written -- harmless.
+
+   Checkpoint: nvidia/Cosmos-Policy-LIBERO-Predict2-2B, HF snapshot
+   cb689ec0e3347c13667d70a78a3447388f5c3bb8 (/project/aip-courvill/esraa1/hf_cache/), used as
+   BOTH actor and scorer (planning_model_ckpt_path empty). This is the same checkpoint our
+   distillation configs use as the TEACHER -- so this is a teacher+planning result, not a
+   student one.
+
+   Caveats found while building the page (all on the page):
+   - Effectively best-of-4, not best-of-8. In all 264 planning steps, candidates 5-8 returned
+     values identical to 1-4. Cause (vendored cosmos_utils.py, NOT edited):
+     WorkerPoolManager.submit_tasks routes query i to GPU i % 4, and persistent_parallel_worker
+     seeds with cfg.seed + gpu_id (randomize_seed=False), so both queries on a GPU are the same
+     sample. The "seed 199-202" labels in the log are cosmetic. Fix options: set
+     num_queries_best_of_n = #GPUs, or pass query_idx in the task dict and seed from it (vendored
+     code change -- needs go-ahead).
+   - Scorer barely discriminates: median best-minus-worst candidate value 0.0012 (p90 0.0054, max
+     0.0243) vs ~18x larger median rise in chosen value between consecutive planning steps.
+     Value head tracks progress well (~0.3 -> ~1.0 per episode) but hardly ranks candidates.
+     Candidate actions aren't logged, so can't tell whether the chunks themselves differ.
+   - No open-loop baseline of this checkpoint on libero_object with the same seed (195) exists,
+     and libero_object has little headroom -> shows planning doesn't break the policy, not that
+     it helps.
+   Config: denoising action/future/value 10/5/5 (future/value borrowed from ALOHA's validated
+   planning setup), future-state ensemble 3 (average), value ensemble 5 (majority_mean),
+   search_depth 1, replan every 16 steps, mean 11.2 s per parallel planning call.
+
+   Next: (1) open-loop baseline, same seed, planning off; (2) fix candidate diversity; (3) log
+   candidate actions; (4) then a suite with headroom (libero_10).
+
+--------------------------------------------------------------------------------
+2026-09-22  LAUNCHED: 90m student self-scoring MPC (1125832) + its open-loop baseline (1126074)
+--------------------------------------------------------------------------------
+MOTIVATION
+The teacher self-scoring MPC run (967898, 30/30 on libero_object) can't show planning HELPS:
+libero_object leaves the 2B teacher no headroom, and no same-seed open-loop run exists. The 90m
+(1-block) student is the natural next test:
+  - Headroom: 90m's full-joint-objective run is the weakest size (63.3% mean over iter>=20k,
+    76.7% open-loop at its final checkpoint), so a planning gain would actually be visible.
+  - The scorer is its best part: in the 2026-09-14 per-frame breakdown, 90m's VALUE term was the
+    LEAST degraded of its 5 outputs relative to 500m (1.55x, vs 3.42x for action). If the
+    1-block student's action head is its bottleneck but its value head is comparatively intact,
+    best-of-N selection with its own value head is exactly the mechanism that could recover
+    some of the gap -- test-time compute substituting for depth.
+  - Relevant to the smallest-viable-student question: if MPC lifts 90m toward the 150m/225m
+    level, the size threshold depends on inference budget, not just parameter count.
+A planning result is only interpretable against an open-loop run that differs ONLY in planning,
+hence the paired baseline (1126074). The existing 76.7% open-loop number is NOT that baseline:
+it used seed 7 and 5 action denoising steps, while the MPC config uses seed 195 and 10.
+
+DESIGN
+Both runs share: checkpoint cosmos_teacher_on_demos_90m_train/checkpoints/iter_000063000 (final,
+DCP dir, joint objective), inference config cosmos_kd_student_90m_libero__inference_only (the
+config the periodic evals load this checkpoint with -- verified in that eval's ENV_EVAL log),
+dataset stats teacher_libero_dataset_statistics.json (byte-identical, via cmp, to the teacher HF
+snapshot cb689ec0...'s libero_dataset_statistics.json, so normalization matches 967898 exactly),
+seed 195, deterministic=True, 10 action denoising steps, libero_object 10 tasks x 3 trials.
+  1125832 (MPC): every planning flag copied unchanged from 967898 -- best-of-8 over 4 GPUs (so the
+    same cfg.seed+gpu_id seeding quirk => effectively best-of-4, KEPT deliberately for a
+    like-for-like with the teacher run), search_depth 1, future/value denoising 5/5, future-state
+    ensemble 3 (average), value ensemble 5 (majority_mean), current-state/action masked for value.
+  1126074 (open-loop): same script with planning off -- N=1, ar_future/ar_value off, ensembles
+    off, no parallel workers, 1 GPU. With N=1 the serial path seeds query 0 with cfg.seed=195,
+    the same seed as MPC's candidate 1 (GPU 0). MPC minus open-loop = the effect of planning.
+Scripts + logs live next to each other under /scratch (the 967898 sbatch was lost with its
+session scratchpad -- these are copied here so they don't go the same way):
+  /scratch/esraa1/libero_mpc_selfscore_90m_student/     (4x L40S, 16 cpu, 64G, 4h)
+  /scratch/esraa1/libero_openloop_90m_student_s195/     (1x L40S,  8 cpu, 40G, 2h)
+Memory sized from 967898's MaxRSS (40.3G with the 2B model).
+
+COMMANDS
+Both submitted with plain `sbatch <script>` from the script's own directory; each script runs:
+  cd /home/esraa1/code/efficient-wm-at-scale/cosmos_policy
+  source .venv/bin/activate && source activate_cuda_env.sh
+  export WANDB_MODE=disabled
+  export IMAGINAIRE_OUTPUT_ROOT=/project/aip-courvill/esraa1/cosmos_dit_wm_output
+followed by:
+
+[1125832]  sbatch /scratch/esraa1/libero_mpc_selfscore_90m_student/libero_mpc_selfscore_90m_student.sbatch
+  python -m cosmos_policy.experiments.robot.libero.run_libero_eval \
+      --config cosmos_kd_student_90m_libero__inference_only \
+      --ckpt_path /project/aip-courvill/esraa1/cosmos_dit_wm_output/cosmos_policy/cosmos_v2_finetune/cosmos_teacher_on_demos_90m_train/checkpoints/iter_000063000 \
+      --config_file cosmos_policy/config/config.py \
+      --use_wrist_image True \
+      --use_proprio True \
+      --normalize_proprio True \
+      --unnormalize_actions True \
+      --dataset_stats_path /project/aip-courvill/esraa1/LIBERO-Cosmos-Policy/success_only/teacher_libero_dataset_statistics.json \
+      --t5_text_embeddings_path /project/aip-courvill/esraa1/LIBERO-Cosmos-Policy/success_only/t5_embeddings.pkl \
+      --trained_with_image_aug True \
+      --chunk_size 16 \
+      --num_open_loop_steps 16 \
+      --task_suite_name libero_object \
+      --num_trials_per_task 3 \
+      --local_log_dir /scratch/esraa1/libero_mpc_selfscore_90m_student/eval_logs \
+      --randomize_seed False \
+      --data_collection False \
+      --seed 195 \
+      --use_variance_scale False \
+      --deterministic True \
+      --run_id_note mpc_selfscore_90m_student \
+      --use_jpeg_compression True \
+      --flip_images True \
+      --ar_future_prediction True \
+      --ar_value_prediction True \
+      --ar_qvalue_prediction False \
+      --num_denoising_steps_action 10 \
+      --num_denoising_steps_future_state 5 \
+      --num_denoising_steps_value 5 \
+      --search_depth 1 \
+      --num_queries_best_of_n 8 \
+      --use_parallel_inference True \
+      --available_gpus "0,1,2,3" \
+      --use_ensemble_value_predictions True \
+      --num_value_predictions_in_ensemble 5 \
+      --value_ensemble_aggregation_scheme majority_mean \
+      --use_ensemble_future_state_predictions True \
+      --num_future_state_predictions_in_ensemble 3 \
+      --future_state_ensemble_aggregation_scheme average \
+      --mask_current_state_action_for_value_prediction True
+
+[1126074]  sbatch /scratch/esraa1/libero_openloop_90m_student_s195/libero_openloop_90m_student_s195.sbatch
+  python -m cosmos_policy.experiments.robot.libero.run_libero_eval \
+      --config cosmos_kd_student_90m_libero__inference_only \
+      --ckpt_path /project/aip-courvill/esraa1/cosmos_dit_wm_output/cosmos_policy/cosmos_v2_finetune/cosmos_teacher_on_demos_90m_train/checkpoints/iter_000063000 \
+      --config_file cosmos_policy/config/config.py \
+      --use_wrist_image True \
+      --use_proprio True \
+      --normalize_proprio True \
+      --unnormalize_actions True \
+      --dataset_stats_path /project/aip-courvill/esraa1/LIBERO-Cosmos-Policy/success_only/teacher_libero_dataset_statistics.json \
+      --t5_text_embeddings_path /project/aip-courvill/esraa1/LIBERO-Cosmos-Policy/success_only/t5_embeddings.pkl \
+      --trained_with_image_aug True \
+      --chunk_size 16 \
+      --num_open_loop_steps 16 \
+      --task_suite_name libero_object \
+      --num_trials_per_task 3 \
+      --local_log_dir /scratch/esraa1/libero_openloop_90m_student_s195/eval_logs \
+      --randomize_seed False \
+      --data_collection False \
+      --seed 195 \
+      --use_variance_scale False \
+      --deterministic True \
+      --run_id_note openloop_90m_student_s195 \
+      --use_jpeg_compression True \
+      --flip_images True \
+      --ar_future_prediction False \
+      --ar_value_prediction False \
+      --ar_qvalue_prediction False \
+      --num_denoising_steps_action 10 \
+      --num_denoising_steps_future_state 5 \
+      --num_denoising_steps_value 5 \
+      --search_depth 1 \
+      --num_queries_best_of_n 1 \
+      --use_parallel_inference False \
+      --use_ensemble_value_predictions False \
+      --num_value_predictions_in_ensemble 5 \
+      --value_ensemble_aggregation_scheme majority_mean \
+      --use_ensemble_future_state_predictions False \
+      --num_future_state_predictions_in_ensemble 3 \
+      --future_state_ensemble_aggregation_scheme average \
+      --mask_current_state_action_for_value_prediction False
+
+Result pending for both. When they land: compare per-task success of 1125832 vs 1126074, and
+check the MPC log's candidate value spread (teacher: median 0.0012) -- if the 90m value head
+discriminates candidates more than the teacher's did, that's informative even at equal success.
+
+--------------------------------------------------------------------------------
+2026-09-22  RESULT: 90m student MPC UNDERPERFORMS its own open-loop baseline (93.3% vs 100%)
+--------------------------------------------------------------------------------
+1125832 (MPC) COMPLETED 42m55s, exit 0:0: 28/30 (93.3%), 2 failures -- milk (2/3) and chocolate
+pudding (2/3), all other 8 tasks 3/3.
+1126074 (open-loop, same checkpoint/seed/config minus planning) COMPLETED 16m19s, exit 0:0:
+30/30 (100%), every task 3/3.
+
+This is the first same-seed, same-checkpoint, planning-on-vs-off comparison run in this project,
+and it answers the question 967898 (teacher, no baseline) couldn't: on libero_object, self-scoring
+MPC does not help, and here it measurably hurts. Consistent with -- and now demonstrating the
+consequence of -- the weak-discrimination finding logged for 967898 above.
+
+Traced the failure mechanism directly in 1125832's log (episode 24, milk, the clearest case).
+Per-candidate values at each 16-step replanning boundary (still only 4 distinct candidates per the
+967898 seeding bug: query i and i+4 are identical every time):
+  t=10   195=0.6903  196=0.6920  197=0.6956  198=0.6943   -> picks 197
+  t=26   195=0.6749  196=0.6745  197=0.6799  198=0.6794   -> picks 197
+  t=42   195=0.6987  196=0.6987  197=0.7021  198=0.7010   -> picks 197
+  t=58   195=0.6561  196=0.6735  197=0.6651  198=0.6607   -> picks 196
+  t=74   195=0.6524  196=0.6601  197=0.6501  198=0.6596   -> picks 196
+  t=90   195=0.6303  196=0.6306  197=0.6324  198=0.6377   -> picks 198
+Seed 195 IS the open-loop trajectory (the one just shown to succeed 100% of the time, deterministic,
+same seed). At every single replanning step above, some other seed edges it out by ~0.003-0.02 --
+inside the noise band already measured for the teacher (median best-minus-worst 0.0012, p90 0.0054).
+MPC essentially never re-selects the known-good seed-195 continuation; instead it hops to whichever
+of 196/197/198 narrowly wins that step's noisy comparison. Each hop is a small, unvalidated
+perturbation away from the one trajectory we know works; over ~8-10 replanning steps per episode
+there are enough hops for the perturbations to compound into an outright failure on 2/30 episodes.
+Net effect: with a scorer this weak, search mostly means "leave the good trajectory and wander" --
+on an already-near-saturated task suite that's pure downside, no upside to offset it.
+
+Together with the action-only collapse (above) and 967898's weak-discrimination finding, this is
+the third result this session pointing at the same root cause: the value/scoring signal in these
+checkpoints is not yet good enough to carry the weight either an action-freeing ablation or a
+best-of-N planner puts on it. Motivates the value-equivalence loss redesign (plan document,
+2026-09-22, not yet implemented) over further tweaks to the existing joint-loss value term.
+
+Next: (1) fix the seeding bug so best-of-N is genuinely N distinct candidates, not N/2; (2) log
+candidate actions, not just values, to see whether 196/197/198's action chunks are meaningfully
+different from 195's; (3) re-run on a task suite with real headroom (libero_10) where a helpful
+planner would have room to show a gain even with a noisy scorer.
+
+--------------------------------------------------------------------------------
+2026-09-22  FIXED action_only_loss (dropped the T rescale), relaunched: 1131899/1131945/1131946
+--------------------------------------------------------------------------------
+The 90m action-only ablation's collapse (968213/968214: 63.3% -> 4.2%) turned out to be
+confounded. action_only_loss did two things at once: (a) mask the joint EDM loss down to the
+action slot alone (same target selection mask_loss_for_action_future_state_prediction's
+demo-branch already does), and (b) rescale the surviving loss by T (~9, the frame-slot count) so
+the mean became a true per-element average over the action slot alone -- policy_text2world_model.py
+:592-598, now deleted. (b) means the effective per-step gradient magnitude on the action pathway
+was ~9x larger than in the joint loss, with no compensating LR change -- confirmed directly by
+comparing raw per-iteration train_loss.csv: action-only's relative noise (stdev/mean) ran 2.5-3x
+higher than plain 90m's steady ~15% at every checkpoint from iter 10k to 60k, while the two runs'
+final mean loss values looked similar (0.41 vs 0.39) -- the offline loss hid the problem, closed-
+loop success didn't.
+
+FIX (policy_text2world_model.py, uncommitted): deleted the `kendall_loss = kendall_loss * T` block
+gated on action_only_loss. Masking logic (action_only_mask_B_T, its inclusion in final_mask_B_T)
+is untouched. Docstring on action_only_loss (:211-222ish) updated to describe the corrected
+behavior and reference this entry. After the fix, action_only_loss and
+mask_loss_for_action_future_state_prediction's demo-branch masking now produce the SAME effective
+per-step gradient magnitude on the action slot -- they differ only in which samples the mask
+applies to (unconditional vs. gated by sample type).
+
+New run pair (conf/runs/teacher_on_demos_90m_action_only_norescale_train(.yaml|_eval.yaml), also
+uncommitted, registered in config.yaml): identical to the original action-only pair in every field
+(same init, same K=5 sidecar, same max_iter=63000) except job_name/master_port(12365)/filename, so
+the old 968213/968214 results remain a valid, separate record of the rescaled variant.
+
+Smoketest (1131899, max_iter=5, distinct job_name/filename): COMPLETED 1m33s, exit 0:0. Exact
+verification the rescale is gone -- ratio of old-smoketest loss to new-smoketest loss at every one
+of the 5 iterations is ~9.00 (74.88/8.32, 73.20/8.13, 60.55/6.73, 74.64/8.29, 69.09/7.68), matching
+T precisely.
+
+Full run launched: 1131945 (train, max_iter=63000) + 1131946 (eval, scores every checkpoint against
+the full 10-task libero_object suite). No output-dir collision with the smoketest or the original
+968213/968214 dirs (checked before submitting).
+
+When results land, check against both anchors and against the per-iteration noise signature:
+  - success near 63.3% + noise back down to plain 90m's ~15% -> collapse was almost entirely the
+    rescale/effective-LR artifact, not the missing predictive targets.
+  - success still near 4.2% (even with noise now at ~15%) -> the predictive targets themselves
+    were load-bearing (representation starvation), independent of the rescale.
+  - in between -> both effects real and partially additive.
+
+--------------------------------------------------------------------------------
+2026-09-23  LAUNCHED: down-weight-not-zero sweep, 5 points (10 jobs)
+--------------------------------------------------------------------------------
+MOTIVATION
+Reconsidered the action-only collapse mechanism after walking back the noise-signature diagnostic
+(2026-09-22 entry's "relative noise" check turned out to be mathematically uninformative -- a pure
+multiplicative rescale changes mean and stdev by the same factor, so their ratio can never reveal
+whether the rescale mattered; confirmed empirically too, see below). Reframed around the actual
+architecture: this is a JOINT spatio-temporal-attention transformer -- masking the LOSS doesn't
+change the FORWARD computation, every training step still runs one self-attention pass across all
+9 frame-slot positions regardless of which get gradient. So "removing the other terms frees
+capacity for action" was likely never the right mental model. Leading hypothesis instead:
+unsupervised slots (fed noise, given zero gradient) drift into incoherent representations that
+contaminate the action slot's own computation via attention at every layer -- not neutral, actively
+destabilizing. A related, broader hypothesis: losing the other targets as an implicit multi-task
+regularizer lets the model overfit/shortcut-learn on the narrow action-only signal, hurting
+closed-loop generalization even when offline loss looks fine. The down-weight-not-zero sweep tests
+both: if even a SMALL nonzero weight on the other terms recovers most of the 63.3% baseline, that
+favors "unsupervised slots are actively harmful" over "the model just needs less signal."
+
+NEW MECHANISM: model.config.non_action_loss_weight (float, default 1.0 = exact no-op).
+policy_text2world_model.py, CosmosPolicyModelConfig -- generalizes action_only_loss's hard 0/1
+mask to a continuous weight on the non-action frame slots (future-image/wrist/proprio/value),
+same unconditional per-sample scope as action_only_loss. Action slot's own weight always stays
+1.0 (never rescaled -- the T-rescale confound stays fixed). w=1.0 reproduces the plain joint loss
+byte-for-byte; w=0.0 reproduces action_only_loss (post-2026-09-22-fix) exactly. Implemented as a
+separate float tensor (non_action_weight_B_T) multiplied into kendall_loss independently of the
+existing 0/1-only final_mask_B_T chain, rather than folded into it -- kept as a new flag alongside
+action_only_loss (not a replacement) so the two already-launched action_only_loss runs
+(968213/968214, 1131945/1131946) stay exactly as documented. Mutually exclusive by assert with
+action_only_loss/mask_loss_for_action_future_state_prediction/mask_value_prediction_loss_for_
+policy_prediction (same reasoning as the existing action_only_loss guard).
+
+Values swept: 0.01, 0.03, 0.1, 0.3, 0.6 (5-point log-ish sweep, user's choice over a 2-point
+coarse check or a denser 5-point option covering a wider top end). Anchors already run: w=0.0 ->
+4.2% (action_only_loss, though that number is from the pre-fix rescaled run -- the fixed rerun
+1131945/1131946 is still in progress), w=1.0 -> 63.3% (plain joint teacher_on_demos_90m_train).
+
+SMOKETEST VERIFICATION (job 1140064, w=0.1, max_iter=5, distinct job_name/filename): COMPLETED
+1m28s, exit 0:0. Loss values ~11.0-11.8 across the 5 iterations -- lands almost exactly on a
+back-of-envelope prediction (~11.2) derived from the w=0 (~8, norescale action-only smoketest) and
+w=1 (~43, plain 90m) anchors assuming the action slot is roughly 1/9 of the plain loss's total
+magnitude and the other 8 slots roughly 8/9 -- confirms the weighting mechanism is doing exactly
+what it's supposed to before spending real GPU-hours on the full sweep.
+
+New run configs (conf/runs/teacher_on_demos_90m_nonaction_w{0_01,0_03,0_1,0_3,0_6}_train(.yaml|
+_eval.yaml), 10 files, all uncommitted, registered in config.yaml): identical to
+teacher_on_demos_90m_train.yaml in every field except model.config.non_action_loss_weight and the
+usual job_name/master_port(12366-12370)/filename bookkeeping. No output-dir collision with any
+existing run (checked before submitting).
+
+LAUNCHED (train, eval):
+  w=0.01  1140081, 1140082
+  w=0.03  1140083, 1140084
+  w=0.1   1140085, 1140086
+  w=0.3   1140087, 1140088
+  w=0.6   1140089, 1140090
+
+When results land: plot success (mean, iter>=20k) against w on a log-x axis alongside the two
+anchors. A sharp jump at small w -> attention-contamination-style hypothesis (a little supervision
+on the other slots is enough to keep them from being actively harmful). A gradual, roughly linear
+recovery across the full range -> more consistent with a smoother capacity/regularization
+trade-off. Still near 4.2% even at w=0.6 -> something else entirely is going on and both leading
+hypotheses need revisiting.
+
+--------------------------------------------------------------------------------
+2026-09-23  Architecture walkthrough: diffusion is RECTIFIED-FLOW-scaled, sigma_data=1 (not EDM/0.5)
+--------------------------------------------------------------------------------
+No jobs launched. Code + paper (arXiv 2601.16163) read-through of how original Cosmos Policy works.
+
+ARTIFACT: "Cosmos Policy Internals" -- https://claude.ai/artifact/7xSQ32H5cJGUsHrc4kT3z5
+Full explainer of the original method: 9-slot latent layout, policy/world-model/value masks,
+training data mix + MC value targets, noise, conditioning merge, parameterization, DiT internals
+(+ comparison vs the original DiT), loss, inference sampler, best-of-N planning, paper results.
+
+FINDING 1 -- preconditioning is rectified flow, sigma_data=1.0 (CORRECTS the 2026-09-04 "790396 COMPLETED" entry,
+which says "sigma_data=0.5"). The LIBERO experiment inherits scaling="rectified_flow",
+sigma_data=1.0 from its base chain (Index-102 -> Index-3 in
+_src/predict2/configs/video2world/experiment/resume_text2world/stage3_2B_ablation.py); neither
+Index-102 nor cosmos_predict2_2b_480p_libero overrides it. The "edm" default in
+text2world_model.py is only a fallback. Consistency check: LIBERO sets sigma_conditional=0.0;
+under EDM scaling c_noise=0.25*log(0)=-inf and the per-frame blend in denoise() (-inf*0) would
+NaN every step, while under RF c_noise=t=0 cleanly. With t = sigma/(1+sigma):
+  c_in = c_skip = 1-t,  c_out = -t,  c_noise = t
+  net input (noisy slots) = (1-t)*x0 + t*eps;  F's target = velocity eps - x0
+  loss weight (1+sigma)^2/sigma^2 = 1/t^2 cancels -> loss = 10 * mean((F - v)^2), uniform in t
+The paper's "EDM" wording refers to the objective ||D(x0+sigma*n; sigma) - x0||^2 and the sigma
+sampling; RF is a preconditioning choice inside that framework, inherited from the pretrained
+checkpoint. NOT yet verified from a resolved run config -- a short job printing
+model.config.scaling / sigma_data would settle it. Any analysis here that assumed EDM weighting or
+sigma_data=0.5 (e.g. the SNR argument above) should be rechecked in RF terms.
+
+FINDING 2 -- effective noise levels.
+  Training: sigma = sqrt(state_t) * sigma_sampled = 3x the HybridEDMSDE draw
+    (adjust_video_noise=True, video_noise_multiplier = sqrt(9)). Hybrid draw: 70% lognormal
+    (p_mean=ln4, p_std=1.2), 30% U[1,85] -> effective median sigma ~12 (t ~0.92), uniform part
+    [3,255]. One sigma per sample, shared across all 9 slots. sample_t does NOT clip to
+    [sigma_min, sigma_max]; those only set the sampler schedule.
+  Inference: cosmos_predict2_2b_480p_libero__inference_only overrides sde to sigma_max=80,
+    sigma_min=4 (matches paper), Karras rho=7 schedule, "2ab" solver, 5 steps, last step jumps to
+    x0-hat (sample_clean). The training config's 200/0.01 is not what eval uses.
+
+--------------------------------------------------------------------------------
+2026-10-01  RESULT: down-weight-not-zero sweep COMPLETE -- a cliff, not a slope
+--------------------------------------------------------------------------------
+All 7 variants (2026-09-23 launch) finished 5-6 days ago and sat undocumented until checked today
+-- all 12 jobs COMPLETED/TIMEOUT cleanly (TIMEOUT on every eval is the expected idle-to-walltime
+pattern, no data lost), full 63,000/63,000 iterations, 44 mature (iter>=20000) evals each.
+
+RESULT (mean success, iter>=20000):
+  w=0.0   1.2%   (fixed action_only_loss -- note: LOWER than the original buggy/rescaled run's
+                  4.2%, so the T-rescale confound was never masking a real recovery at exactly
+                  zero weight. The collapse at w=0 is real.)
+  w=0.01  64.3%
+  w=0.03  59.0%
+  w=0.1   61.8%
+  w=0.3   59.9%
+  w=0.6   68.1%
+  w=1.0   63.3%  (plain joint loss, unchanged baseline)
+
+Every nonzero weight tested -- down to 1% of normal weight -- lands in the SAME 59-68% band as
+the full joint loss. No gradual recovery curve across 0.01->0.6; it's a step function at the
+very bottom of the range. This settles the mechanism question raised 2026-09-22/23: favors the
+attention-contamination hypothesis (unsupervised slots drift into incoherent representations that
+corrupt the action slot's own computation via shared self-attention, actively harmful rather than
+merely inert) over a smooth capacity/regularization trade-off (which would predict a gradual climb
+across w, not a cliff at exactly zero). Practically: ANY nonzero weight on the other frame slots is
+sufficient -- there is no benefit to tuning w precisely once it's off zero, at least in this range.
+
+ARTIFACT updated with final data + "What this shows" conclusion:
+https://claude.ai/artifact/A59GReCct2MRVPVzbby4vA
+
+Caveat: the interior points (0.01-0.6, 59-68%) are statistically indistinguishable from each other
+and from the w=1.0 baseline given this project's established mature-eval noise band (stdev
+~0.15-0.21 per run) -- don't over-read w=0.6's 68.1% as "better than full weight," it's noise.
+
+Next: the open question is no longer "does down-weighting help" (yes, trivially) but "why does
+EXACTLY zero collapse so completely." A natural follow-up: probe what the action-only (w=0)
+checkpoint actually predicts at the unsupervised slot positions (future-image/wrist/proprio/value)
+-- garbage/high-variance output there would directly confirm the attention-contamination mechanism
+rather than leaving it as the best remaining hypothesis by elimination.
+
+--------------------------------------------------------------------------------
+2026-10-01  IMPLEMENTED + LAUNCHED: physically-smaller architecture (slots removed, not masked)
+--------------------------------------------------------------------------------
+Follow-up to the attention-contamination discussion: instead of masking the loss on the non-action
+slots (down-weight sweep, still leaves them IN the sequence for self-attention to mix with), this
+variant drops future_proprio/future_wrist_image/future_image/value from the sequence entirely
+before VAE encoding. T' genuinely shrinks (9 latent slots -> 5: blank, current_proprio,
+current_wrist_image, current_image, action).
+
+CODE (uncommitted):
+  libero_dataset.py -- three new independent flags: use_future_proprio, use_future_wrist_image,
+    use_future_third_person_image (default True, so every existing run is unaffected). Previously
+    the FUTURE slot blocks reused use_proprio/use_wrist_images/use_third_person_images, coupling
+    them to the CURRENT-frame conditioning flags -- those must stay enabled even when the future
+    target is dropped, hence new independent flags rather than reusing the old ones.
+  policy_text2world_model.py -- found and fixed a REAL PRE-EXISTING BUG while implementing this:
+    the value-slot injection (`x0_B_C_T_H_W[..., value_indices, ...] = value_function_return...`)
+    was unconditional, unlike future_proprio's injection right next to it which already checks
+    `torch.all(future_proprio_indices != -1)`. Any config with return_value_function_returns=False
+    was ALREADY silently corrupting whatever real slot sits last via Python's negative-indexing
+    (-1 resolves to the last position) -- not a new risk from this change, a latent bug this
+    change's testing surfaced. Fixed by extracting replace_latent_with_value (mirrors
+    replace_latent_with_action_chunk/replace_latent_with_proprio's existing split) and guarding
+    its call site the same way future_proprio's already is.
+
+TESTS (new, cosmos_policy/tests/ -- no test infra existed in this project before):
+  test_latent_value_injection.py, test_libero_future_slot_flags.py. 9/9 pass. Running pytest
+  directly (`python -m pytest`) hits an unrelated environment landmine: pytest's rootdir detection
+  lands on cosmos_policy/cosmos_policy/pyproject.toml and ends up shadowing the real pip-installed
+  `tokenizers` package with this project's own cosmos_policy/tokenizers/ directory --
+  --import-mode=importlib does NOT fix it (rootdir insertion is separate from per-module import
+  mode). Worked around with a plain importlib-based runner instead of chasing the pytest
+  internals further -- not worth the time for 9 assert-based tests with no fixture needs.
+
+SMOKETEST FINDING (job 1252262, FAILED, then 1252273, FIXED+COMPLETED): the "T' is fully dynamic,
+nothing fixes it anywhere" conclusion from the earlier research agent (2026-10-01, same day) was
+INCOMPLETE. There IS a fixed expected-length check, just at the PIXEL level, before the model ever
+sees the batch: _normalize_video_databatch_inplace (_src/predict2/models/text2world_model.py:
+773-776) asserts the dataset's real pixel-frame count against
+get_pixel_num_frames(model.config.state_t) = (state_t-1)*4+1. LIBERO's base config sets state_t=9
+(33 pixel frames, matching the full 9-slot sequence). First smoketest failed with exactly this
+assertion: 17 != 33 -- 17 being MY actual (correct) reduced output, 33 being the model's still-
+expecting-the-old-architecture value. Fix: one more override, model.config.state_t=5 (->17 pixel
+frames, matches). After that fix: checkpoint loaded with
+_IncompatibleKeys(missing_keys=[], unexpected_keys=[], incorrect_shapes=[]) -- confirms the OTHER
+part of the research agent's claim was right (RoPE position embeddings, no learned per-position
+parameters, so the SAME init checkpoint trained on the full 9-slot sequence loads and runs
+correctly against the shorter one with zero architecture changes needed, only this one config
+override).
+
+New run configs (conf/runs/teacher_on_demos_90m_slots_removed_train(.yaml|_eval.yaml), uncommitted,
+registered in config.yaml): identical to teacher_on_demos_90m_train.yaml except the three new
+dataset flags (all false) + return_value_function_returns=false + model.config.state_t=5. No
+loss-masking flags needed at all -- nothing left to predict except action, so the unmodified joint-
+loss code naturally reduces to action-only.
+
+LAUNCHED: 1252276 (train, max_iter=63000) + 1252277 (eval, full 10-task libero_object).
+
+Comparison anchors already established (down-weight-not-zero sweep, same 90m size/recipe):
+  action_only_loss (slots present, loss masked to zero):          1.2%  mean success iter>=20k
+  non_action_loss_weight=0.01 (slots present, tiny loss weight):  64.3%
+  plain joint loss (all slots present and supervised):            63.3%
+This run tests whether PHYSICALLY REMOVING the slots lands near the w=0 anchor (1.2% -- consistent
+with "something about real information flow through those positions matters, not just whether
+they're in the sequence") or near the w>0/plain anchors (59-68% -- consistent with "a stable
+target, including none-at-all because there's nothing there to be unstable, is what matters, and
+physical removal is just as good as weak supervision at achieving that").

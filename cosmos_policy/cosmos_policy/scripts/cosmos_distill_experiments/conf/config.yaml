@@ -112,6 +112,33 @@ defaults:
   # epiplexity check) and 225m (3 blocks, matches 500m's plateau) -- same full 10-task recipe.
   - runs@runs.teacher_on_demos_150m_train: teacher_on_demos_150m_train
   - runs@runs.teacher_on_demos_150m_train_eval: teacher_on_demos_150m_train_eval
+  # 2026-09-15: action-only loss-masking ablation off the 90m run -- same recipe/init/data, only
+  # model.config.action_only_loss=true differs (see the run yaml's own docstring).
+  - runs@runs.teacher_on_demos_90m_action_only_train: teacher_on_demos_90m_action_only_train
+  - runs@runs.teacher_on_demos_90m_action_only_train_eval: teacher_on_demos_90m_action_only_train_eval
+  # 2026-09-22: re-run of the above after fixing a confound in action_only_loss (it used to also
+  # rescale the surviving action-slot loss by T, ~9x effective step-size jump -- see the run
+  # yaml's own docstring and experiment_journal.txt).
+  - runs@runs.teacher_on_demos_90m_action_only_norescale_train: teacher_on_demos_90m_action_only_norescale_train
+  - runs@runs.teacher_on_demos_90m_action_only_norescale_train_eval: teacher_on_demos_90m_action_only_norescale_train_eval
+  # 2026-09-23: down-weight-not-zero sweep (model.config.non_action_loss_weight) -- 5 points
+  # between action_only_loss (w=0, 4.2%) and the plain joint loss (w=1, 63.3%). See each run
+  # yaml's own docstring and non_action_loss_weight's docstring in policy_text2world_model.py.
+  - runs@runs.teacher_on_demos_90m_nonaction_w0_01_train: teacher_on_demos_90m_nonaction_w0_01_train
+  - runs@runs.teacher_on_demos_90m_nonaction_w0_01_train_eval: teacher_on_demos_90m_nonaction_w0_01_train_eval
+  - runs@runs.teacher_on_demos_90m_nonaction_w0_03_train: teacher_on_demos_90m_nonaction_w0_03_train
+  - runs@runs.teacher_on_demos_90m_nonaction_w0_03_train_eval: teacher_on_demos_90m_nonaction_w0_03_train_eval
+  - runs@runs.teacher_on_demos_90m_nonaction_w0_1_train: teacher_on_demos_90m_nonaction_w0_1_train
+  - runs@runs.teacher_on_demos_90m_nonaction_w0_1_train_eval: teacher_on_demos_90m_nonaction_w0_1_train_eval
+  - runs@runs.teacher_on_demos_90m_nonaction_w0_3_train: teacher_on_demos_90m_nonaction_w0_3_train
+  - runs@runs.teacher_on_demos_90m_nonaction_w0_3_train_eval: teacher_on_demos_90m_nonaction_w0_3_train_eval
+  - runs@runs.teacher_on_demos_90m_nonaction_w0_6_train: teacher_on_demos_90m_nonaction_w0_6_train
+  - runs@runs.teacher_on_demos_90m_nonaction_w0_6_train_eval: teacher_on_demos_90m_nonaction_w0_6_train_eval
+  # 2026-10-01: "physically remove the slots" variant -- genuinely smaller architecture (T' drops
+  # from 9 to 5 frame positions), not just a loss-masking ablation. See the run yaml's own
+  # docstring and the new use_future_*/return_value_function_returns flags in libero_dataset.py.
+  - runs@runs.teacher_on_demos_90m_slots_removed_train: teacher_on_demos_90m_slots_removed_train
+  - runs@runs.teacher_on_demos_90m_slots_removed_train_eval: teacher_on_demos_90m_slots_removed_train_eval
   - _self_
 
 hydra:
